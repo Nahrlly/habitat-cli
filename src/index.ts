@@ -512,18 +512,20 @@ program
         habitat,
       };
       saveState(refreshedRegistration);
+      const moduleSummary =
+        refreshedRegistration.modules.length === 0
+          ? "No modules created yet."
+          : `${refreshedRegistration.modules.length} module(s): ${refreshedRegistration.modules
+              .map((module) => `${module.selector} (${module.displayName})`)
+              .join(", ")}`;
 
-      console.log(
-        JSON.stringify(
-          {
-            registration: refreshedRegistration,
-            habitat,
-            moduleCount: refreshedRegistration.modules.length,
-          },
-          null,
-          2,
-        ),
-      );
+      console.log(`Habitat "${habitat.displayName}" is registered with Kepler.`);
+      console.log(`Habitat ID: ${habitat.id}`);
+      console.log(`Habitat slug: ${habitat.habitatSlug}`);
+      console.log(`Kepler catalog version: ${habitat.catalogVersion}`);
+      console.log(`Kepler status: ${habitat.status}`);
+      console.log(`Last seen at: ${habitat.lastSeenAt ?? "unknown"}`);
+      console.log(`Modules created: ${moduleSummary}`);
     } catch (error) {
       console.error((error as Error).message);
       process.exitCode = 1;
