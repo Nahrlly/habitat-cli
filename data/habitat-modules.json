@@ -7,7 +7,7 @@
     "connectedTo": [],
     "runtimeAttributes": {
       "health": 100,
-      "status": "active",
+      "status": "offline",
       "crewCapacity": 2,
       "pressurizedVolumeM3": 60,
       "dataStorageTb": 4,
@@ -63,7 +63,7 @@
       "status": "offline",
       "crewCapacity": 0,
       "physicalVolumeM3": 8,
-      "currentEnergyKwh": 457.49291666666664,
+      "currentEnergyKwh": 442.3363888888889,
       "energyStorageKwh": 500,
       "reserveKwh": 60,
       "maxPowerOutputKw": 40,

@@ -818,11 +818,7 @@ moduleCommand
     try {
       const registration = loadStateOrFail();
       const nextStatus = parseModuleStatus(status);
-      const currentModule = registration.modules.find((module) => module.id === moduleId);
-
-      if (!currentModule) {
-        throw new Error(`Module not found: ${moduleId}`);
-      }
+      const currentModule = resolveModule(registration, moduleId);
 
       const nextModule: HabitatModule = {
         ...currentModule,
@@ -834,7 +830,7 @@ moduleCommand
 
       saveState({
         ...registration,
-        modules: registration.modules.map((module) => (module.id === moduleId ? nextModule : module)),
+        modules: registration.modules.map((module) => (module.id === currentModule.id ? nextModule : module)),
       });
 
       console.log(
