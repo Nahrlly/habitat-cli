@@ -93,6 +93,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dataDirectory = path.resolve(__dirname, "../data");
 const keplerStateFilePath = path.join(dataDirectory, "kepler.json");
+const habitatModulesFilePath = path.join(dataDirectory, "habitat-modules.json");
 const keplerBaseUrl = process.env.KEPLER_BASE_URL ?? "";
 const keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
 
@@ -112,6 +113,51 @@ function ensureKeplerStateFile(): void {
   }
 }
 
+function ensureHabitatModulesFile(): void {
+  mkdirSync(dataDirectory, { recursive: true });
+
+  try {
+    readFileSync(habitatModulesFilePath, "utf8");
+  } catch {
+    writeFileSync(habitatModulesFilePath, "[]\n", "utf8");
+  }
+}
+
+function loadHabitatModules(): HabitatModule[] {
+  ensureHabitatModulesFile();
+
+  try {
+    const raw = JSON.parse(readFileSync(habitatModulesFilePath, "utf8"));
+
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw.map(normalizeModule);
+    }
+  } catch {
+    // Fall through to legacy migration below.
+  }
+
+  try {
+    const legacyRegistration = JSON.parse(readFileSync(keplerStateFilePath, "utf8")) as LoadableKeplerState;
+
+    if (Array.isArray(legacyRegistration.modules) && legacyRegistration.modules.length > 0) {
+      const modules = legacyRegistration.modules.map(normalizeModule);
+      saveHabitatModules(modules);
+      return modules;
+    }
+  } catch {
+    // Ignore malformed legacy cache and return an empty module list.
+  }
+
+  return [];
+}
+
+function saveHabitatModules(modules: HabitatModule[]): void {
+  ensureHabitatModulesFile();
+  const temporaryFilePath = `${habitatModulesFilePath}.${process.pid}.tmp`;
+  writeFileSync(temporaryFilePath, `${JSON.stringify(modules, null, 2)}\n`, "utf8");
+  renameSync(temporaryFilePath, habitatModulesFilePath);
+}
+
 function loadKeplerRegistration(): KeplerRegistration | null {
   ensureKeplerStateFile();
 
@@ -125,22 +171,12 @@ function loadKeplerRegistration(): KeplerRegistration | null {
       raw.habitat !== undefined &&
       raw.habitat !== null
     ) {
-      const modules = Array.isArray(raw.modules) ? raw.modules.map(normalizeModule) : [];
-      const selectorsById = new Map<string, string>();
-
-      for (const module of modules) {
-        selectorsById.set(module.id, makeUniqueSelector(module.id, modules, module.id));
-      }
-
       return {
         habitatId: raw.habitatId,
         habitatUuid: raw.habitatUuid,
         displayName: raw.displayName,
         habitat: raw.habitat as KeplerHabitat,
-        modules: modules.map((module) => ({
-          ...module,
-          selector: selectorsById.get(module.id) ?? module.selector,
-        })),
+        modules: loadHabitatModules(),
         blueprints: Array.isArray(raw.blueprints) ? raw.blueprints.map(normalizeBlueprint) : [],
       };
     }
@@ -154,7 +190,21 @@ function loadKeplerRegistration(): KeplerRegistration | null {
 function saveKeplerRegistration(registration: KeplerRegistration): void {
   ensureKeplerStateFile();
   const temporaryFilePath = `${keplerStateFilePath}.${process.pid}.tmp`;
-  writeFileSync(temporaryFilePath, `${JSON.stringify(registration, null, 2)}\n`, "utf8");
+  writeFileSync(
+    temporaryFilePath,
+    `${JSON.stringify(
+      {
+        habitatId: registration.habitatId,
+        habitatUuid: registration.habitatUuid,
+        displayName: registration.displayName,
+        habitat: registration.habitat,
+        blueprints: registration.blueprints,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
   renameSync(temporaryFilePath, keplerStateFilePath);
 }
 
@@ -208,6 +258,162 @@ function normalizeBlueprint(rawBlueprint: unknown): HabitatBlueprint {
 
 function moduleCount(registration: KeplerRegistration | null): number {
   return registration?.modules.length ?? 0;
+}
+
+function getModuleStatus(module: HabitatModule): string {
+  const status = module.runtimeAttributes.status;
+
+  if (
+    status === "online" ||
+    status === "offline" ||
+    status === "idle" ||
+    status === "active" ||
+    status === "damaged"
+  ) {
+    return status;
+  }
+
+  return "online";
+}
+
+function parseModuleStatus(value: string): "offline" | "idle" | "online" | "active" | "damaged" {
+  if (
+    value === "offline" ||
+    value === "idle" ||
+    value === "online" ||
+    value === "active" ||
+    value === "damaged"
+  ) {
+    return value;
+  }
+
+  throw new InvalidArgumentError("Status must be offline, idle, online, active, or damaged.");
+}
+
+function getModulePowerDraw(module: HabitatModule): number {
+  const powerDrawKw = module.runtimeAttributes.powerDrawKw;
+  const status = getModuleStatus(module);
+
+  if (typeof powerDrawKw === "number") {
+    return powerDrawKw;
+  }
+
+  if (isObject(powerDrawKw)) {
+    const draw = powerDrawKw[status];
+
+    if (typeof draw === "number") {
+      return draw;
+    }
+  }
+
+  return 0;
+}
+
+function isBatteryModule(module: HabitatModule): boolean {
+  return module.capabilities.includes("power-storage");
+}
+
+function getBatteryModules(registration: KeplerRegistration): HabitatModule[] {
+  return registration.modules.filter(isBatteryModule);
+}
+
+function getBatteryCharge(module: HabitatModule): number {
+  const currentEnergyKwh = module.runtimeAttributes.currentEnergyKwh;
+
+  return typeof currentEnergyKwh === "number" ? currentEnergyKwh : 0;
+}
+
+function setBatteryCharge(module: HabitatModule, currentEnergyKwh: number): HabitatModule {
+  return {
+    ...module,
+    runtimeAttributes: {
+      ...module.runtimeAttributes,
+      currentEnergyKwh,
+    },
+  };
+}
+
+function formatPowerDraw(powerDraw: number): string {
+  return Number.isInteger(powerDraw) ? `${powerDraw}` : powerDraw.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatEnergyCost(energyCost: number): string {
+  if (energyCost === 0) {
+    return "0";
+  }
+
+  if (energyCost < 0.01) {
+    return energyCost.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  return energyCost.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function renderTextTable(headers: string[], rows: string[][]): string {
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...rows.map((row) => (row[index] ?? "").length)),
+  );
+  const formatRow = (row: string[]): string =>
+    row.map((cell, index) => cell.padEnd(widths[index] ?? cell.length)).join(" | ");
+  const separator = widths.map((width) => "-".repeat(width)).join("-|-");
+
+  return [formatRow(headers), separator, ...rows.map(formatRow)].join("\n");
+}
+
+function buildModuleStatusRows(registration: KeplerRegistration): string[][] {
+  return registration.modules.map((module) => [
+    module.selector,
+    getModuleStatus(module),
+    `${formatPowerDraw(getModulePowerDraw(module))} kW`,
+  ]);
+}
+
+function getTotalBatteryCharge(registration: KeplerRegistration): number {
+  return getBatteryModules(registration).reduce((total, module) => total + getBatteryCharge(module), 0);
+}
+
+function sumModulePowerDraw(registration: KeplerRegistration): number {
+  return registration.modules.reduce((total, module) => total + getModulePowerDraw(module), 0);
+}
+
+function powerDrawToEnergyCost(powerDrawKw: number, ticks: number): number {
+  return (powerDrawKw * ticks) / 3600;
+}
+
+function applyTick(registration: KeplerRegistration, ticks: number): {
+  registration: KeplerRegistration;
+  totalPowerDraw: number;
+  batteryBefore: number;
+  batteryAfter: number;
+} {
+  const totalPowerDraw = powerDrawToEnergyCost(sumModulePowerDraw(registration), ticks);
+  const batteryBefore = getTotalBatteryCharge(registration);
+  const batteryAfter = Math.max(0, batteryBefore - totalPowerDraw);
+  const batteryDrain = batteryBefore - batteryAfter;
+  const batteryModules = getBatteryModules(registration);
+  const updatedBatteryModules: HabitatModule[] = [];
+  let remainingDrain = batteryDrain;
+
+  for (const module of batteryModules) {
+    const currentCharge = getBatteryCharge(module);
+    const nextCharge = Math.max(0, currentCharge - remainingDrain);
+    remainingDrain -= currentCharge - nextCharge;
+    updatedBatteryModules.push(setBatteryCharge(module, nextCharge));
+  }
+
+  return {
+    registration: {
+      ...registration,
+      modules: registration.modules.map((module) => {
+        const updatedBatteryModule = updatedBatteryModules.find((candidate) => candidate.id === module.id);
+
+        return updatedBatteryModule ?? module;
+      }),
+    },
+    totalPowerDraw,
+    batteryBefore,
+    batteryAfter,
+  };
 }
 
 function deriveSelector(identifier: string): string {
@@ -464,6 +670,7 @@ function loadStateOrFail(): KeplerRegistration {
 
 function saveState(registration: KeplerRegistration): void {
   saveKeplerRegistration(registration);
+  saveHabitatModules(registration.modules);
 }
 
 const program = new Command();
@@ -533,6 +740,31 @@ program
   });
 
 program
+  .command("tick")
+  .description("Advance habitat power consumption by one or more ticks.")
+  .option("--ticks <ticks>", "number of ticks to advance", (value) => parsePositiveNumber(value, "ticks"), 1)
+  .action((options: { ticks: number }) => {
+    try {
+      const registration = loadStateOrFail();
+      const tickCount = Math.floor(options.ticks);
+
+      if (tickCount <= 0) {
+        throw new Error("ticks must be greater than zero.");
+      }
+
+      const nextState = applyTick(registration, tickCount);
+      saveState(nextState.registration);
+
+      console.log(`Advanced ${tickCount} tick(s).`);
+      console.log(`Total power draw: ${formatEnergyCost(nextState.totalPowerDraw)} kWh.`);
+      console.log(`Battery charge: ${nextState.batteryBefore} kWh -> ${nextState.batteryAfter} kWh.`);
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("unregister")
   .description("Unregister this Habitat CLI from Kepler.")
   .action(async () => {
@@ -553,6 +785,66 @@ program
   });
 
 const moduleCommand = program.command("module").description("Manage local Habitat modules.");
+
+moduleCommand
+  .command("status")
+  .description("Show module power states and current draw.")
+  .action(() => {
+    try {
+      const registration = loadStateOrFail();
+
+      if (registration.modules.length === 0) {
+        console.log("No modules found.");
+        return;
+      }
+
+      const rows = buildModuleStatusRows(registration);
+      console.log(renderTextTable(["Module", "State", "Power Draw"], rows));
+      console.log(
+        `Total current power draw: ${formatPowerDraw(sumModulePowerDraw(registration))} kW; one tick energy cost: ${formatEnergyCost(powerDrawToEnergyCost(sumModulePowerDraw(registration), 1))} kWh.`,
+      );
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exitCode = 1;
+    }
+  });
+
+moduleCommand
+  .command("set-status")
+  .description("Set a local module runtime status.")
+  .argument("<moduleId>", "module id")
+  .argument("<status>", "offline, idle, online, active, or damaged")
+  .action((moduleId: string, status: string) => {
+    try {
+      const registration = loadStateOrFail();
+      const nextStatus = parseModuleStatus(status);
+      const currentModule = registration.modules.find((module) => module.id === moduleId);
+
+      if (!currentModule) {
+        throw new Error(`Module not found: ${moduleId}`);
+      }
+
+      const nextModule: HabitatModule = {
+        ...currentModule,
+        runtimeAttributes: {
+          ...currentModule.runtimeAttributes,
+          status: nextStatus,
+        },
+      };
+
+      saveState({
+        ...registration,
+        modules: registration.modules.map((module) => (module.id === moduleId ? nextModule : module)),
+      });
+
+      console.log(
+        `Module ${currentModule.selector} status set to ${nextStatus}; current power draw ${formatPowerDraw(getModulePowerDraw(nextModule))} kW.`,
+      );
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exitCode = 1;
+    }
+  });
 
 moduleCommand
   .command("create")
@@ -619,7 +911,7 @@ moduleCommand
       }
 
       for (const module of registration.modules) {
-        console.log(`${module.selector} ${module.displayName}`);
+        console.log(module.selector);
       }
     } catch (error) {
       console.error((error as Error).message);

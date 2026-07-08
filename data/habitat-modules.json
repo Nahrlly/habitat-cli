@@ -1,0 +1,154 @@
+[
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_command_module_1",
+    "selector": "command-module-1",
+    "blueprintId": "command-module",
+    "displayName": "Command Module",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "status": "active",
+      "crewCapacity": 2,
+      "pressurizedVolumeM3": 60,
+      "dataStorageTb": 4,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 2,
+        "active": 2,
+        "damaged": 2
+      }
+    },
+    "capabilities": [
+      "habitat-command"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_life_support_1",
+    "selector": "life-support-1",
+    "blueprintId": "life-support",
+    "displayName": "Life Support",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "status": "active",
+      "crewCapacity": 2,
+      "crewSupportNominal": 2,
+      "crewSupportEmergency": 3,
+      "pressurizedVolumeM3": 35,
+      "oxygenBufferKg": 120,
+      "waterBufferKg": 1200,
+      "co2WarningPpm": 2000,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 5,
+        "active": 5,
+        "damaged": 5
+      },
+      "oxygenProductionKgPerHour": 0.1,
+      "co2ScrubKgPerHour": 0.12
+    },
+    "capabilities": [
+      "atmosphere-control",
+      "redundant-life-support"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_basic_battery_1",
+    "selector": "basic-battery-1",
+    "blueprintId": "basic-battery",
+    "displayName": "Basic Battery",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "status": "offline",
+      "crewCapacity": 0,
+      "physicalVolumeM3": 8,
+      "currentEnergyKwh": 457.49291666666664,
+      "energyStorageKwh": 500,
+      "reserveKwh": 60,
+      "maxPowerOutputKw": 40,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 0,
+        "active": 0,
+        "damaged": 0
+      }
+    },
+    "capabilities": [
+      "power-storage"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_supply_cache_1",
+    "selector": "supply-cache-1",
+    "blueprintId": "supply-cache",
+    "displayName": "Supply Cache",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "status": "offline",
+      "crewCapacity": 0,
+      "physicalVolumeM3": 25,
+      "storageMassKg": 6000,
+      "cargoVolumeM3": 18,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 0,
+        "active": 0,
+        "damaged": 0
+      }
+    },
+    "capabilities": [
+      "storage"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_workshop_fabricator_1",
+    "selector": "workshop-fabricator-1",
+    "blueprintId": "workshop-fabricator",
+    "displayName": "Workshop Fabricator",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "status": "online",
+      "crewCapacity": 1,
+      "physicalVolumeM3": 20,
+      "rawMaterialBufferKg": 1500,
+      "inProcessStorageM3": 3,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 1,
+        "active": 8,
+        "damaged": 1
+      }
+    },
+    "capabilities": [
+      "basic-fabrication"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_basic_suitport_1",
+    "selector": "basic-suitport-1",
+    "blueprintId": "basic-suitport",
+    "displayName": "Basic Suitport",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "status": "online",
+      "crewCapacity": 1,
+      "physicalVolumeM3": 4,
+      "cargoTransferRating": "poor",
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 0.5,
+        "active": 2,
+        "damaged": 0.5
+      },
+      "crewAccessCapacity": 1
+    },
+    "capabilities": [
+      "limited-eva",
+      "suitport-access"
+    ]
+  }
+]
