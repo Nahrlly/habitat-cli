@@ -1,0 +1,40 @@
+{
+  "items": [
+    {
+      "resourceId": "conductive-ore",
+      "displayName": "Conductive Ore",
+      "quantity": 0,
+      "unit": "",
+      "category": "",
+      "source": "local",
+      "updatedAt": "2026-07-08T22:19:37.956Z"
+    },
+    {
+      "resourceId": "ferrite",
+      "displayName": "Ferrite",
+      "quantity": 0,
+      "unit": "",
+      "category": "",
+      "source": "local",
+      "updatedAt": "2026-07-08T22:19:37.956Z"
+    },
+    {
+      "resourceId": "silicate-glass",
+      "displayName": "Silicate Glass",
+      "quantity": 0,
+      "unit": "",
+      "category": "",
+      "source": "local",
+      "updatedAt": "2026-07-08T22:19:37.956Z"
+    },
+    {
+      "resourceId": "water",
+      "displayName": "Water",
+      "quantity": 125,
+      "unit": "L",
+      "category": "consumable",
+      "source": "local",
+      "updatedAt": "2026-07-08T19:50:36.307Z"
+    }
+  ]
+}

@@ -63,7 +63,7 @@
       "status": "offline",
       "crewCapacity": 0,
       "physicalVolumeM3": 8,
-      "currentEnergyKwh": 442.3363888888889,
+      "currentEnergyKwh": 427.65958333333333,
       "energyStorageKwh": 500,
       "reserveKwh": 60,
       "maxPowerOutputKw": 40,
@@ -86,7 +86,7 @@
     "connectedTo": [],
     "runtimeAttributes": {
       "health": 100,
-      "status": "offline",
+      "status": "online",
       "crewCapacity": 0,
       "physicalVolumeM3": 25,
       "storageMassKg": 6000,
@@ -149,6 +149,81 @@
     "capabilities": [
       "limited-eva",
       "suitport-access"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_small-solar-array_1",
+    "selector": "small-solar-array-1",
+    "blueprintId": "small-solar-array",
+    "displayName": "Small Solar Array",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 0,
+        "active": 0,
+        "damaged": 0
+      },
+      "status": "online",
+      "crewCapacity": 0,
+      "powerGenerationKw": 12,
+      "degradedStormGenerationKw": 3,
+      "maintenanceHoursPer100Ticks": 4,
+      "surfaceAreaM2": 28
+    },
+    "capabilities": [
+      "solar-generation"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_small-solar-array_2",
+    "selector": "small-solar-array-1-2",
+    "blueprintId": "small-solar-array",
+    "displayName": "Small Solar Array",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 0,
+        "active": 0,
+        "damaged": 0
+      },
+      "status": "online",
+      "crewCapacity": 0,
+      "powerGenerationKw": 12,
+      "degradedStormGenerationKw": 3,
+      "maintenanceHoursPer100Ticks": 4,
+      "surfaceAreaM2": 28
+    },
+    "capabilities": [
+      "solar-generation"
+    ]
+  },
+  {
+    "id": "habitat_e77896ff_8127_4edc_9d3a_aa35e73308d1_small-solar-array_3",
+    "selector": "small-solar-array-1-3",
+    "blueprintId": "small-solar-array",
+    "displayName": "Small Solar Array",
+    "connectedTo": [],
+    "runtimeAttributes": {
+      "health": 100,
+      "powerDrawKw": {
+        "offline": 0,
+        "online": 0,
+        "active": 0,
+        "damaged": 0
+      },
+      "status": "online",
+      "crewCapacity": 0,
+      "powerGenerationKw": 12,
+      "degradedStormGenerationKw": 3,
+      "maintenanceHoursPer100Ticks": 4,
+      "surfaceAreaM2": 28
+    },
+    "capabilities": [
+      "solar-generation"
     ]
   }
 ]

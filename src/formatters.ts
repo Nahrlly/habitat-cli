@@ -1,5 +1,12 @@
 import type { KeplerCatalogBlueprint, KeplerCatalogResource } from "./kepler-catalog.js";
-import type { KeplerRegistration, HabitatModule } from "./types.js";
+import type {
+  ConstructionReadinessReport,
+  ConstructionShortage,
+  HabitatConstructionJob,
+  HabitatInventoryState,
+  KeplerRegistration,
+  HabitatModule,
+} from "./types.js";
 
 export function formatPowerDraw(powerDraw: number): string {
   return Number.isInteger(powerDraw) ? `${powerDraw}` : powerDraw.toFixed(1).replace(/\.0$/, "");
@@ -31,12 +38,17 @@ export function renderTextTable(headers: string[], rows: string[][]): string {
 export function buildModuleStatusRows(registration: KeplerRegistration): string[][] {
   return registration.modules.map((module) => [
     module.selector,
-    getModuleStatus(module),
+    getDeclaredModuleStatus(module),
+    getEffectiveModuleStatus(module),
     `${formatPowerDraw(getModulePowerDraw(module))} kW`,
   ]);
 }
 
 export function getModuleStatus(module: HabitatModule): string {
+  return getEffectiveModuleStatus(module);
+}
+
+export function getDeclaredModuleStatus(module: HabitatModule): string {
   const status = module.runtimeAttributes.status;
 
   if (
@@ -52,9 +64,17 @@ export function getModuleStatus(module: HabitatModule): string {
   return "online";
 }
 
+export function getEffectiveModuleStatus(module: HabitatModule): string {
+  if (isModuleBusy(module)) {
+    return "active";
+  }
+
+  return getDeclaredModuleStatus(module);
+}
+
 export function getModulePowerDraw(module: HabitatModule): number {
   const powerDrawKw = module.runtimeAttributes.powerDrawKw;
-  const status = getModuleStatus(module);
+  const status = getEffectiveModuleStatus(module);
 
   if (typeof powerDrawKw === "number") {
     return powerDrawKw;
@@ -153,8 +173,12 @@ export function formatBlueprintSummary(blueprint: KeplerCatalogBlueprint): strin
     lines.push(`Required facility: ${JSON.stringify(requiredFacility)}`);
   }
 
-  lines.push(`Requirements: ${formatObjectEntries(inputs)}`);
-  lines.push(`Output: ${formatObjectEntries(output)}`);
+  lines.push("");
+  lines.push("Required resources:");
+  lines.push(formatKeyValueTable(["Resource", "Amount"], inputs));
+  lines.push("");
+  lines.push("Output:");
+  lines.push(formatKeyValueTable(["Field", "Value"], output));
   lines.push(`Production cost: ${formatObjectEntries(productionCost)}`);
 
   if (prerequisites.length > 0) {
@@ -201,6 +225,106 @@ export function formatResourceList(resources: KeplerCatalogResource[]): string {
   return renderTextTable(["Name", "Category", "Unit"], rows);
 }
 
+export function formatInventoryList(state: HabitatInventoryState): string {
+  if (state.items.length === 0) {
+    return "No inventory found.";
+  }
+
+  return renderTextTable(
+    ["Resource", "Name", "Quantity", "Unit", "Category", "Source"],
+    state.items.map((item) => [
+      item.resourceId,
+      item.displayName,
+      `${item.quantity}`,
+      item.unit,
+      item.category,
+      item.source,
+    ]),
+  );
+}
+
+export function formatConstructionShortages(shortages: ConstructionShortage[]): string {
+  if (shortages.length === 0) {
+    return "All required resources are available.";
+  }
+
+  const rows = shortages.map((shortage) => [
+    shortage.resourceId,
+    `${shortage.required}`,
+    `${shortage.available}`,
+    `${shortage.required - shortage.available}`,
+  ]);
+
+  return ["Missing resources:", renderTextTable(["Resource", "Required", "Available", "Missing"], rows)].join("\n");
+}
+
+export function formatConstructionReadinessReport(report: ConstructionReadinessReport): string {
+  const checklistRows = report.checks.map((check) => [check.label, check.ok ? "PASS" : "FAIL", check.details]);
+  const sections = [
+    `Construction readiness for ${report.displayName}`,
+    renderTextTable(["Check", "Status", "Details"], checklistRows),
+  ];
+
+  if (report.inventory.consumedInputs.length > 0) {
+    sections.push(
+      renderTextTable(
+        ["Resource", "Required", "Available", "Missing"],
+        report.inventory.consumedInputs.map((input) => {
+          const shortage = report.inventory.shortages.find((candidate) => candidate.resourceId === input.resourceId);
+          const available = shortage ? shortage.available : input.amount;
+          return [input.resourceId, `${input.amount}`, `${available}`, `${Math.max(0, input.amount - available)}`];
+        }),
+      ),
+    );
+  }
+
+  sections.push(report.canStart ? "Construction can start." : "Construction cannot start.");
+  return sections.join("\n\n");
+}
+
+export function formatConstructionProgress(job: HabitatConstructionJob): string {
+  return `Construction: ${job.pendingModuleName} ${job.ticksRemaining}/${job.ticksRequired} ticks remaining.`;
+}
+
+export function formatConstructionStatus(job: HabitatConstructionJob | null): string {
+  if (!job) {
+    return "Construction: idle.";
+  }
+
+  const percentComplete = Math.floor(((job.ticksRequired - job.ticksRemaining) / job.ticksRequired) * 100);
+  return `Construction: ${job.pendingModuleName} ${job.ticksRemaining}/${job.ticksRequired} ticks remaining (${percentComplete}%).`;
+}
+
+export function formatModuleDetails(module: HabitatModule, activeConstructionJob: HabitatConstructionJob | null = null): string {
+  const declaredStatus = getDeclaredModuleStatus(module);
+  const effectiveStatus = getEffectiveModuleStatus(module);
+  const activity = describeModuleActivity(module, activeConstructionJob);
+  const rows: string[][] = [
+    ["Name", module.displayName],
+    ["Selector", module.selector],
+    ["Blueprint", module.blueprintId],
+    ["Declared state", declaredStatus],
+    ["Effective state", effectiveStatus],
+    ["Power draw", `${formatPowerDraw(getModulePowerDraw(module))} kW`],
+  ];
+
+  if (activity) {
+    rows.push(["Activity", activity]);
+  }
+
+  if (module.connectedTo.length > 0) {
+    rows.push(["Connected to", module.connectedTo.join(", ")]);
+  }
+
+  if (module.capabilities.length > 0) {
+    rows.push(["Capabilities", module.capabilities.join(", ")]);
+  }
+
+  rows.push(...formatRuntimeAttributeRows(module.runtimeAttributes));
+
+  return renderTextTable(["Field", "Value"], rows);
+}
+
 export function formatModuleSummary(registration: KeplerRegistration): string {
   return registration.modules.length === 0
     ? "No modules created yet."
@@ -237,18 +361,105 @@ function formatObjectEntries(value: Record<string, unknown>): string {
   return entries.map(([key, entryValue]) => `${key}: ${formatValue(entryValue)}`).join(", ");
 }
 
+function formatKeyValueTable(headers: [string, string], value: Record<string, unknown>): string {
+  const rows = Object.entries(value).map(([key, entryValue]) => [key, formatValue(entryValue)]);
+
+  if (rows.length === 0) {
+    return "none";
+  }
+
+  return renderTextTable(headers, rows);
+}
+
 function formatValue(value: unknown): string {
   if (Array.isArray(value)) {
-    return value.map(formatValue).join(", ");
+    return `[${value.map(formatValue).join(", ")}]`;
   }
 
   if (value && typeof value === "object") {
-    return JSON.stringify(value);
+    return `{ ${Object.entries(value)
+      .map(([key, entryValue]) => `${key}: ${formatValue(entryValue)}`)
+      .join(", ")} }`;
   }
 
   return String(value);
 }
 
+function formatRuntimeAttributeRows(attributes: Record<string, unknown>): string[][] {
+  return Object.entries(attributes).flatMap(([key, value]) => {
+    if (key === "status" || key === "powerDrawKw") {
+      return [];
+    }
+
+    if (key === "inProcessStorageM3" && typeof value === "number") {
+      return [[`In-process storage`, `${value} m3`]];
+    }
+
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return [[key, `{ ${Object.entries(value)
+        .map(([nestedKey, nestedValue]) => `${nestedKey}: ${formatValue(nestedValue)}`)
+        .join(", ")} }`]];
+    }
+
+    return [[formatDisplayKey(key), formatValue(value)]];
+  });
+}
+
+function describeModuleActivity(module: HabitatModule, activeConstructionJob: HabitatConstructionJob | null): string | null {
+  if (
+    activeConstructionJob &&
+    (activeConstructionJob.fabricatorId === module.id || activeConstructionJob.fabricatorSelector === module.selector)
+  ) {
+    return `construction in progress: ${activeConstructionJob.pendingModuleName} (${activeConstructionJob.ticksRemaining}/${activeConstructionJob.ticksRequired} ticks remaining)`;
+  }
+
+  const attributes = module.runtimeAttributes;
+
+  if (typeof attributes.inProcessStorageM3 === "number" && attributes.inProcessStorageM3 > 0) {
+    return `fabrication in progress`;
+  }
+
+  if (typeof attributes.currentTask === "string" && attributes.currentTask.trim()) {
+    return attributes.currentTask.trim();
+  }
+
+  if (getEffectiveModuleStatus(module) === "active") {
+    return "busy";
+  }
+
+  return null;
+}
+
+function formatDisplayKey(key: string): string {
+  if (key === "inProcessStorageM3") {
+    return "In-process storage";
+  }
+
+  if (key === "physicalVolumeM3") {
+    return "Physical volume";
+  }
+
+  if (key === "rawMaterialBufferKg") {
+    return "Raw material buffer";
+  }
+
+  if (key === "crewCapacity") {
+    return "Crew capacity";
+  }
+
+  if (key === "health") {
+    return "Health";
+  }
+
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (value) => value.toUpperCase());
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isModuleBusy(module: HabitatModule): boolean {
+  return typeof module.runtimeAttributes.inProcessStorageM3 === "number" && module.runtimeAttributes.inProcessStorageM3 > 0;
 }

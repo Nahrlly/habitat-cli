@@ -13,9 +13,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDirectory = path.resolve(__dirname, "../data");
-const keplerStateFilePath = path.join(dataDirectory, "kepler.json");
-const habitatModulesFilePath = path.join(dataDirectory, "habitat-modules.json");
+const defaultDataDirectory = path.resolve(__dirname, "../data");
 
 export function ensureKeplerEnv(baseUrl: string, planetToken: string): void {
   if (!baseUrl || !planetToken) {
@@ -27,7 +25,7 @@ export function loadKeplerRegistration(): KeplerRegistration | null {
   ensureKeplerStateFile();
 
   try {
-    const raw = JSON.parse(readFileSync(keplerStateFilePath, "utf8")) as LoadableKeplerState;
+    const raw = JSON.parse(readFileSync(getKeplerStateFilePath(), "utf8")) as LoadableKeplerState;
 
     if (
       typeof raw.habitatId === "string" &&
@@ -54,7 +52,8 @@ export function loadKeplerRegistration(): KeplerRegistration | null {
 
 export function saveKeplerRegistration(registration: KeplerRegistration): void {
   ensureKeplerStateFile();
-  const temporaryFilePath = `${keplerStateFilePath}.${process.pid}.tmp`;
+  const filePath = getKeplerStateFilePath();
+  const temporaryFilePath = `${filePath}.${process.pid}.tmp`;
   writeFileSync(
     temporaryFilePath,
     `${JSON.stringify(
@@ -70,26 +69,27 @@ export function saveKeplerRegistration(registration: KeplerRegistration): void {
     )}\n`,
     "utf8",
   );
-  renameSync(temporaryFilePath, keplerStateFilePath);
+  renameSync(temporaryFilePath, filePath);
 }
 
 export function clearKeplerRegistration(): void {
   ensureKeplerStateFile();
-  writeFileSync(keplerStateFilePath, "{}\n", "utf8");
+  writeFileSync(getKeplerStateFilePath(), "{}\n", "utf8");
 }
 
 export function saveHabitatModules(modules: HabitatModule[]): void {
   ensureHabitatModulesFile();
-  const temporaryFilePath = `${habitatModulesFilePath}.${process.pid}.tmp`;
+  const filePath = getHabitatModulesFilePath();
+  const temporaryFilePath = `${filePath}.${process.pid}.tmp`;
   writeFileSync(temporaryFilePath, `${JSON.stringify(modules, null, 2)}\n`, "utf8");
-  renameSync(temporaryFilePath, habitatModulesFilePath);
+  renameSync(temporaryFilePath, filePath);
 }
 
 export function loadHabitatModules(): HabitatModule[] {
   ensureHabitatModulesFile();
 
   try {
-    const raw = JSON.parse(readFileSync(habitatModulesFilePath, "utf8"));
+    const raw = JSON.parse(readFileSync(getHabitatModulesFilePath(), "utf8"));
 
     if (Array.isArray(raw) && raw.length > 0) {
       return raw.map(normalizeModule);
@@ -99,7 +99,7 @@ export function loadHabitatModules(): HabitatModule[] {
   }
 
   try {
-    const legacyRegistration = JSON.parse(readFileSync(keplerStateFilePath, "utf8")) as LoadableKeplerState;
+    const legacyRegistration = JSON.parse(readFileSync(getKeplerStateFilePath(), "utf8")) as LoadableKeplerState;
 
     if (Array.isArray(legacyRegistration.modules) && legacyRegistration.modules.length > 0) {
       const modules = legacyRegistration.modules.map(normalizeModule);
@@ -129,23 +129,37 @@ export function saveState(registration: KeplerRegistration): void {
 }
 
 function ensureKeplerStateFile(): void {
-  mkdirSync(dataDirectory, { recursive: true });
+  mkdirSync(getDataDirectory(), { recursive: true });
 
   try {
-    readFileSync(keplerStateFilePath, "utf8");
+    readFileSync(getKeplerStateFilePath(), "utf8");
   } catch {
-    writeFileSync(keplerStateFilePath, "{}\n", "utf8");
+    writeFileSync(getKeplerStateFilePath(), "{}\n", "utf8");
   }
 }
 
 function ensureHabitatModulesFile(): void {
-  mkdirSync(dataDirectory, { recursive: true });
+  mkdirSync(getDataDirectory(), { recursive: true });
 
   try {
-    readFileSync(habitatModulesFilePath, "utf8");
+    readFileSync(getHabitatModulesFilePath(), "utf8");
   } catch {
-    writeFileSync(habitatModulesFilePath, "[]\n", "utf8");
+    writeFileSync(getHabitatModulesFilePath(), "[]\n", "utf8");
   }
+}
+
+function getDataDirectory(): string {
+  return process.env.HABITAT_DATA_DIRECTORY
+    ? path.resolve(process.env.HABITAT_DATA_DIRECTORY)
+    : defaultDataDirectory;
+}
+
+function getKeplerStateFilePath(): string {
+  return path.join(getDataDirectory(), "kepler.json");
+}
+
+function getHabitatModulesFilePath(): string {
+  return path.join(getDataDirectory(), "habitat-modules.json");
 }
 
 function normalizeModule(rawModule: unknown): HabitatModule {

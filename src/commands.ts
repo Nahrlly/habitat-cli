@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Command, InvalidArgumentError } from "commander";
+import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { createKeplerCatalogClient, type KeplerCatalogBlueprint, type KeplerCatalogResource } from "./kepler-catalog.js";
+import { addInventoryQuantity, loadInventoryState, setInventoryQuantity } from "./inventory-state.js";
 import {
   ensureKeplerEnv,
   clearKeplerRegistration,
@@ -11,9 +13,15 @@ import {
 import {
   applyTick,
   buildModuleStatusRows,
+  formatConstructionReadinessReport,
+  formatConstructionProgress,
+  formatConstructionStatus,
+  formatConstructionShortages,
   formatBlueprintList,
   formatBlueprintSummary,
   formatEnergyCost,
+  formatInventoryList,
+  formatModuleDetails,
   formatModuleSummary,
   formatPowerDraw,
   formatResourceList,
@@ -90,21 +98,40 @@ export function createProgram(): Command {
     .command("tick")
     .description("Advance habitat power consumption by one or more ticks.")
     .option("--ticks <ticks>", "number of ticks to advance", (value) => parsePositiveNumber(value, "ticks"), 1)
-    .action((options: { ticks: number }) => {
+    .argument("[unit]", "seconds or hours")
+    .action((unit: string | undefined, options: { ticks: number }) => {
       try {
         const registration = loadStateOrFail();
         const tickCount = Math.floor(options.ticks);
+        const secondsPerTick = parseTickUnit(unit);
 
         if (tickCount <= 0) {
           throw new Error("ticks must be greater than zero.");
         }
 
-        const nextState = applyTick(registration, tickCount);
-        saveState(nextState.registration);
+        const nextState = applyTick(registration, tickCount * secondsPerTick);
+        const constructionResult = advanceConstruction(tickCount * secondsPerTick);
+        const completedModule = constructionResult.completedJob
+          ? createConstructedModule(nextState.registration, constructionResult.completedJob)
+          : null;
+        const persistedRegistration =
+          completedModule === null
+            ? nextState.registration
+            : {
+                ...nextState.registration,
+                modules: [...nextState.registration.modules, completedModule],
+              };
+        saveState(persistedRegistration);
 
-        console.log(`Advanced ${tickCount} tick(s).`);
+        console.log(`Advanced ${tickCount} tick(s) at ${secondsPerTick} second(s) per tick.`);
         console.log(`Total power draw: ${formatEnergyCost(nextState.totalPowerDraw)} kWh.`);
         console.log(`Battery charge: ${nextState.batteryBefore} kWh -> ${nextState.batteryAfter} kWh.`);
+        if (constructionResult.activeJob) {
+          console.log(formatConstructionProgress(constructionResult.activeJob));
+        }
+        if (completedModule) {
+          console.log(`Construction completed: ${completedModule.displayName} (${completedModule.selector}).`);
+        }
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -134,6 +161,9 @@ export function createProgram(): Command {
   const moduleCommand = program.command("module").description("Manage local Habitat modules.");
   const blueprintCommand = program.command("blueprint").description("Inspect the official Kepler blueprint catalog.");
   const resourceCommand = program.command("resource").description("Inspect the official Kepler resource catalog.");
+  const inventoryCommand = program.command("inventory").description("Manage local habitat inventory.");
+  const constructionCommand = program.command("construction").description("Inspect local module construction.");
+  const constructAction = createConstructAction();
 
   blueprintCommand
     .command("list")
@@ -182,6 +212,155 @@ export function createProgram(): Command {
       }
     });
 
+  inventoryCommand
+    .command("list")
+    .description("List local habitat inventory.")
+    .action(() => {
+      try {
+        console.log(formatInventoryList(loadInventoryState()));
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  inventoryCommand
+    .command("set")
+    .description("Set a local inventory quantity.")
+    .argument("<resourceId>", "resource id")
+    .argument("<quantity>", "inventory quantity", (value) => parsePositiveNumber(value, "quantity"))
+    .option("--name <displayName>", "resource display name")
+    .option("--unit <unit>", "resource unit")
+    .option("--category <category>", "resource category")
+    .action(
+      (
+        resourceId: string,
+        quantity: number,
+        options: {
+          name?: string;
+          unit?: string;
+          category?: string;
+        },
+      ) => {
+        try {
+          const item = setInventoryQuantity({
+            resourceId: parseNonEmptyString(resourceId, "resource id"),
+            quantity,
+            displayName: options.name,
+            unit: options.unit,
+            category: options.category,
+          });
+          console.log(`Inventory set: ${item.resourceId} = ${item.quantity}${item.unit ? ` ${item.unit}` : ""}.`);
+        } catch (error) {
+          console.error((error as Error).message);
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  constructionCommand
+    .command("status")
+    .description("Show construction progress.")
+    .action(() => {
+      try {
+        const state = loadConstructionState();
+        console.log(formatConstructionStatus(state.activeJob));
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  constructionCommand
+    .command("cancel")
+    .description("Cancel an in-progress construction job.")
+    .argument("[selector]", "module selector")
+    .action((selector: string | undefined) => {
+      try {
+        const registration = loadStateOrFail();
+        const currentConstruction = loadConstructionState();
+        const activeJob = currentConstruction.activeJob;
+        const resolvedSelector =
+          selector ??
+          (activeJob?.fabricatorSelector || activeJob?.fabricatorId || activeJob?.selector || undefined);
+
+        if (!resolvedSelector) {
+          console.error("No active construction job to cancel.");
+          process.exitCode = 1;
+          return;
+        }
+
+        const resolvedModule = registration.modules.find((module) => module.selector === resolvedSelector || module.id === resolvedSelector) ?? null;
+
+        if (resolvedModule && activeJob && resolvedModule.blueprintId === "workshop-fabricator") {
+          saveConstructionState({ activeJob: null });
+          console.log(`Construction canceled: ${resolvedSelector}.`);
+          return;
+        }
+
+        const result = cancelConstruction(resolvedSelector);
+
+        if (!result.canceledJob) {
+          console.error(`No active construction job matches ${resolvedSelector}.`);
+          process.exitCode = 1;
+          return;
+        }
+
+        console.log(`Construction canceled: ${resolvedSelector}.`);
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  inventoryCommand
+    .command("add")
+    .description("Add to a local inventory quantity.")
+    .argument("<resourceId>", "resource id")
+    .argument("<amount>", "amount to add", (value) => parsePositiveNumber(value, "amount"))
+    .option("--name <displayName>", "resource display name")
+    .option("--unit <unit>", "resource unit")
+    .option("--category <category>", "resource category")
+    .action(
+      (
+        resourceId: string,
+        amount: number,
+        options: {
+          name?: string;
+          unit?: string;
+          category?: string;
+        },
+      ) => {
+        try {
+          const item = addInventoryQuantity({
+            resourceId: parseNonEmptyString(resourceId, "resource id"),
+            amount,
+            displayName: options.name,
+            unit: options.unit,
+            category: options.category,
+          });
+          console.log(`Inventory added: ${item.resourceId} = ${item.quantity}${item.unit ? ` ${item.unit}` : ""}.`);
+        } catch (error) {
+          console.error((error as Error).message);
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  moduleCommand
+    .command("construct")
+    .description("Start constructing a local module from a blueprint.")
+    .argument("<blueprintId>", "blueprint id")
+    .option("--dry-run", "validate requirements without changing state")
+    .action(constructAction);
+
+  program
+    .command("construct")
+    .description("Start constructing a local module from a blueprint.")
+    .argument("<blueprintId>", "blueprint id")
+    .option("--dry-run", "validate requirements without changing state")
+    .action(constructAction);
+
   moduleCommand
     .command("status")
     .description("Show module power states and current draw.")
@@ -195,7 +374,7 @@ export function createProgram(): Command {
         }
 
         const rows = buildModuleStatusRows(registration);
-        console.log(renderTextTable(["Module", "State", "Power Draw"], rows));
+        console.log(renderTextTable(["Module", "Declared State", "Effective State", "Power Draw"], rows));
         console.log(
           `Total current power draw: ${formatPowerDraw(sumModulePowerDraw(registration))} kW; one tick energy cost: ${formatEnergyCost(powerDrawToEnergyCost(sumModulePowerDraw(registration), 1))} kWh.`,
         );
@@ -318,7 +497,8 @@ export function createProgram(): Command {
     .action((selector: string) => {
       try {
         const registration = loadStateOrFail();
-        console.log(JSON.stringify(resolveModule(registration, selector), null, 2));
+        const constructionState = loadConstructionState();
+        console.log(formatModuleDetails(resolveModule(registration, selector), constructionState.activeJob));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -597,14 +777,31 @@ function parseKeyValuePairs(values: string[], label: string): Record<string, unk
   }, {});
 }
 
+function parseTickUnit(value: string | undefined): number {
+  if (!value || value === "second" || value === "seconds") {
+    return 1;
+  }
+
+  if (value === "hour") {
+    return 3600;
+  }
+
+  throw new InvalidArgumentError("Tick unit must be seconds or hours.");
+}
+
 function resolveModule(registration: KeplerRegistration, selector: string): HabitatModule {
-  const exactMatches = registration.modules.filter((module) => module.id === selector || module.selector === selector);
+  const exactMatches = registration.modules.filter(
+    (module) => module.id === selector || module.selector === selector || module.blueprintId === selector,
+  );
 
   if (exactMatches.length > 0) {
     return exactMatches[0];
   }
 
-  const matches = registration.modules.filter((module) => module.id.startsWith(selector));
+  const matches = registration.modules.filter(
+    (module) =>
+      module.id.startsWith(selector) || module.selector.startsWith(selector) || module.blueprintId.startsWith(selector),
+  );
 
   if (matches.length === 1) {
     return matches[0];
@@ -670,4 +867,75 @@ function makeUniqueSelector(identifier: string, modules: HabitatModule[], curren
   }
 
   return `${baseSelector}-${suffix}`;
+}
+
+function createConstructedModule(registration: KeplerRegistration, job: import("./types.js").HabitatConstructionJob): HabitatModule {
+  const existingModuleCount = registration.modules.filter((module) => module.blueprintId === job.blueprintId).length;
+  const nextNumber = existingModuleCount + 1;
+  const identifier = `${registration.habitatId}_${job.moduleType}_${nextNumber}`;
+  const selectorSeed = `${job.moduleType}_${nextNumber}`;
+
+  return {
+    id: identifier,
+    selector: makeUniqueSelector(selectorSeed, registration.modules),
+    blueprintId: job.blueprintId,
+    displayName: job.pendingModuleName,
+    connectedTo: job.connectedTo,
+    runtimeAttributes: job.runtimeAttributes,
+    capabilities: job.capabilities,
+  };
+}
+
+function stripBlueprintSuffix(displayName: string): string {
+  return displayName.replace(/\s+Blueprint$/, "").trim() || displayName;
+}
+
+function createConstructAction(): (blueprintId: string, options: { dryRun?: boolean }) => void {
+  return (blueprintId: string, options: { dryRun?: boolean }) => {
+    try {
+      const registration = loadStateOrFail();
+      const blueprint = requireBlueprint(registration, blueprintId);
+      const result = startConstruction({
+        blueprint,
+        modules: registration.modules,
+        dryRun: options.dryRun ?? false,
+      });
+      const readinessReport = formatConstructionReadinessReport(result.report);
+
+      if (options.dryRun) {
+        console.log(readinessReport);
+        return;
+      }
+
+      if (!result.report.canStart) {
+        console.log(readinessReport);
+        process.exitCode = 1;
+        return;
+      }
+
+      if (!result.startedJob) {
+        throw new Error("Construction did not start.");
+      }
+
+      if (result.startedJob.ticksRemaining === 0) {
+        const completedModule = createConstructedModule(registration, result.startedJob);
+        saveState({
+          ...registration,
+          modules: [...registration.modules, completedModule],
+        });
+        advanceConstruction(0);
+        console.log(`Construction completed immediately: ${completedModule.displayName} (${completedModule.selector}).`);
+        return;
+      }
+
+      console.log(
+        `Construction started for ${result.startedJob.pendingModuleName}. Consumed ${result.startedJob.consumedInputs
+          .map((input) => `${input.resourceId}: ${input.amount}`)
+          .join(", ") || "no resources"}. ${result.startedJob.ticksRemaining} tick(s) remaining.`,
+      );
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exitCode = 1;
+    }
+  };
 }
