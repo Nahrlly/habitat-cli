@@ -2,23 +2,33 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Database } from "bun:sqlite";
 import { createProgram } from "./commands.js";
-import type { HabitatBlueprint, HabitatInventoryItem, HabitatModule } from "./types.js";
+import type { HabitatBlueprint, HabitatConstructionJob, HabitatInventoryItem, HabitatModule } from "./types.js";
 
 describe("inventory commands", () => {
   const originalCwd = process.cwd();
+  const originalFetch = globalThis.fetch;
   let tempDir = "";
 
   beforeEach(() => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "habitat-inventory-"));
     process.env.HABITAT_DATA_DIRECTORY = path.join(tempDir, "data");
     process.chdir(tempDir);
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ wPerM2: 0 }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
   });
 
   afterEach(() => {
     process.exitCode = 0;
     delete process.env.HABITAT_DATA_DIRECTORY;
     process.chdir(originalCwd);
+    globalThis.fetch = originalFetch;
 
     if (tempDir) {
       rmSync(tempDir, { recursive: true, force: true });
@@ -55,13 +65,9 @@ describe("inventory commands", () => {
 
     expect(errors).toHaveLength(0);
 
-    const inventoryPath = path.join(tempDir, "data", "inventory.json");
-    expect(existsSync(inventoryPath)).toBe(true);
-
-    const inventory = JSON.parse(readFileSync(inventoryPath, "utf8")) as {
-      items: Array<{ resourceId: string; quantity: number; unit?: string; category?: string; source?: string }>;
-    };
-
+    const dbPath = path.join(tempDir, "data", "habitat.sqlite");
+    expect(existsSync(dbPath)).toBe(true);
+    const inventory = readInventory(tempDir);
     expect(inventory.items).toHaveLength(1);
     expect(inventory.items[0]).toMatchObject({
       resourceId: "water",
@@ -111,7 +117,7 @@ describe("inventory commands", () => {
     expect(errors).toHaveLength(0);
     expect(readInventory(tempDir).items[0]?.quantity).toBe(12);
     expect(readConstruction(tempDir).activeJob).toBeNull();
-    expect(readModules(tempDir)).toHaveLength(1);
+    expect(readModules(tempDir)).toHaveLength(2);
   });
 
   test("dry-run reports all readiness checks when multiple blockers exist", async () => {
@@ -222,19 +228,19 @@ describe("inventory commands", () => {
     await createProgram().parseAsync(["construct", "command-module"], { from: "user" });
     expect(readInventory(tempDir).items[0]?.quantity).toBe(4);
     expect(readConstruction(tempDir).activeJob?.ticksRemaining).toBe(5);
-    expect(readModules(tempDir)).toHaveLength(1);
+    expect(readModules(tempDir)).toHaveLength(2);
 
     await createProgram().parseAsync(["tick", "--ticks", "4"], { from: "user" });
     expect(readConstruction(tempDir).activeJob?.ticksRemaining).toBe(1);
-    expect(readModules(tempDir)).toHaveLength(1);
+    expect(readModules(tempDir)).toHaveLength(2);
 
     await createProgram().parseAsync(["tick", "--ticks", "1"], { from: "user" });
     expect(readConstruction(tempDir).activeJob).toBeNull();
-    expect(readModules(tempDir)).toHaveLength(2);
-    expect(readModules(tempDir)[1]).toMatchObject({
+    expect(readModules(tempDir)).toHaveLength(3);
+    expect(readModules(tempDir)[2]).toMatchObject({
       blueprintId: "command-module",
       displayName: "Command Module",
-      selector: "command-module-1",
+      selector: "command-module-1-2",
     });
   });
 
@@ -272,13 +278,13 @@ describe("inventory commands", () => {
 
     await createProgram().parseAsync(["construct", "command-module"], { from: "user" });
     const beforeCancelInventory = readInventory(tempDir);
-    const { output, errors } = await runCli(["construction", "cancel", "workshop-fabricator-1"]);
+    const { output, errors } = await runCli(["construction", "cancel"]);
 
     expect(errors).toHaveLength(0);
-    expect(output).toEqual(["Construction canceled: command-module-1."]);
+    expect(output).toEqual(["Construction canceled: command-module-2."]);
     expect(readInventory(tempDir)).toEqual(beforeCancelInventory);
     expect(readConstruction(tempDir).activeJob).toBeNull();
-    expect(readModules(tempDir)).toHaveLength(1);
+    expect(readModules(tempDir)).toHaveLength(2);
   });
 
   test("construction cancel fails when the selector does not match the active job", async () => {
@@ -320,8 +326,8 @@ describe("inventory commands", () => {
     expect(output).toHaveLength(0);
     expect(errors).toEqual(["No active construction job matches wrong-selector."]);
     expect(readInventory(tempDir)).toEqual(beforeCancelInventory);
-    expect(readConstruction(tempDir).activeJob?.selector).toBe("command-module-1");
-    expect(readModules(tempDir)).toHaveLength(1);
+    expect(readConstruction(tempDir).activeJob?.selector).toBe("command-module-2");
+    expect(readModules(tempDir)).toHaveLength(2);
   });
 
   test("blocked real construct prints the same report and does not mutate files", async () => {
@@ -587,6 +593,507 @@ describe("inventory commands", () => {
     expect(rendered).toContain("active");
   });
 
+  test("power-storage modules default to online when created without a status", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+
+    const { errors } = await runCli(["module", "create", "Battery", "--capability", "power-storage"]);
+
+    expect(errors).toHaveLength(0);
+    expect(readModules(tempDir)).toHaveLength(1);
+    expect(readModules(tempDir)[0]?.runtimeAttributes.status).toBe("online");
+  });
+
+  test("solar tick fills batteries one at a time", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "small-solar-array",
+        selector: "small-solar-array-1",
+        displayName: "Small Solar Array",
+        runtimeAttributes: {
+          status: "online",
+          powerGenerationKw: 12,
+        },
+        capabilities: ["solar-generation"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery One",
+        runtimeAttributes: {
+          status: "online",
+          currentEnergyKwh: 9,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-2",
+        displayName: "Basic Battery Two",
+        runtimeAttributes: {
+          status: "online",
+          currentEnergyKwh: 0,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ wPerM2: 900 }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    const { errors } = await runCli(["tick", "--ticks", "3600"]);
+
+    expect(errors).toHaveLength(0);
+    expect(readModules(tempDir)[2]?.runtimeAttributes.currentEnergyKwh).toBe(10);
+    expect(readModules(tempDir)[3]?.runtimeAttributes.currentEnergyKwh).toBe(5);
+  });
+
+  test("tick uses the registered energyKwh when currentEnergyKwh is absent", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery",
+        runtimeAttributes: {
+          status: "online",
+          energyKwh: 500,
+          energyStorageKwh: 500,
+        },
+        capabilities: ["power-storage"],
+      }),
+      createModule({
+        blueprintId: "workshop-fabricator",
+        selector: "workshop-fabricator-1",
+        displayName: "Workshop Fabricator",
+        runtimeAttributes: {
+          status: "online",
+          powerDrawKw: 1,
+        },
+        capabilities: ["basic-fabrication"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ solarIrradiance: { wPerM2: 0, condition: "night" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+
+    const { errors } = await runCli(["tick", "--ticks", "3600"]);
+
+    expect(errors).toHaveLength(0);
+    const battery = readModules(tempDir).find((module) => module.selector === "basic-battery-1");
+    expect(battery?.runtimeAttributes.currentEnergyKwh).toBe(499);
+    expect(battery?.runtimeAttributes.energyKwh).toBe(499);
+  });
+
+  test("offline batteries do not receive solar charge", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "small-solar-array",
+        selector: "small-solar-array-1",
+        displayName: "Small Solar Array",
+        runtimeAttributes: {
+          status: "online",
+          powerGenerationKw: 12,
+        },
+        capabilities: ["solar-generation"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery One",
+        runtimeAttributes: {
+          status: "offline",
+          currentEnergyKwh: 9,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ wPerM2: 900 }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    const { errors } = await runCli(["tick", "--ticks", "3600"]);
+
+    expect(errors).toHaveLength(0);
+    expect(readModules(tempDir)[2]?.runtimeAttributes.currentEnergyKwh).toBe(9);
+  });
+
+  test("tick reports why no solar charging happened", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "small-solar-array",
+        selector: "small-solar-array-1",
+        displayName: "Small Solar Array",
+        runtimeAttributes: {
+          status: "offline",
+          powerGenerationKw: 12,
+        },
+        capabilities: ["solar-generation"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery One",
+        runtimeAttributes: {
+          status: "online",
+          currentEnergyKwh: 9,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ wPerM2: 900 }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    const { output, errors } = await runCli(["tick", "--ticks", "3600"]);
+
+    expect(errors).toHaveLength(0);
+    expect(output.some((line) => line.includes("Total solar generation: 0"))).toBe(true);
+    expect(output.some((line) => line.includes("no solar charging happened because no solar generation modules were online or active"))).toBe(true);
+  });
+
+  test("all modules go offline when the battery reaches zero", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "small-solar-array",
+        selector: "small-solar-array-1",
+        displayName: "Small Solar Array",
+        runtimeAttributes: {
+          status: "online",
+          powerGenerationKw: 1,
+        },
+        capabilities: ["solar-generation"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery One",
+        runtimeAttributes: {
+          status: "online",
+          currentEnergyKwh: 0.0001,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+      createModule({
+        blueprintId: "workshop-fabricator",
+        selector: "workshop-fabricator-1",
+        displayName: "Workshop Fabricator",
+        runtimeAttributes: {
+          status: "online",
+          powerDrawKw: {
+            offline: 0,
+            online: 1,
+            active: 1,
+            damaged: 1,
+          },
+        },
+        capabilities: ["basic-fabrication"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ solarIrradiance: { wPerM2: 0, condition: "night" } }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    const { errors } = await runCli(["tick", "--ticks", "3600"]);
+
+    expect(errors).toHaveLength(0);
+    expect(readModules(tempDir).every((module) => module.runtimeAttributes.status === "offline")).toBe(true);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ solarIrradiance: { wPerM2: 900, condition: "clear" } }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    const secondTick = await runCli(["tick", "--ticks", "3600"]);
+
+    expect(secondTick.errors).toHaveLength(0);
+    expect(secondTick.output.some((line) => line.includes("Advanced 3600 tick(s) at 1 second(s) per tick."))).toBe(true);
+  });
+
+  test("offline fabricator is not shown as active after shutdown", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [
+        createBlueprint({
+          blueprintId: "command-module",
+          displayName: "Command Module Blueprint",
+          inputs: { steel: 10 },
+          buildTicks: 5,
+          requiredFacility: {
+            moduleType: "workshop-fabricator",
+            minimumLevel: 1,
+          },
+        }),
+      ],
+    });
+    seedInventory(tempDir, [
+      createInventoryItem({
+        resourceId: "steel",
+        displayName: "Steel",
+        quantity: 10,
+        unit: "kg",
+        category: "metal",
+      }),
+    ]);
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "workshop-fabricator",
+        selector: "workshop-fabricator-1",
+        displayName: "Workshop Fabricator",
+        runtimeAttributes: {
+          status: "online",
+          powerDrawKw: {
+            offline: 0,
+            online: 1,
+            active: 1,
+            damaged: 1,
+          },
+        },
+        capabilities: ["basic-fabrication"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery One",
+        runtimeAttributes: {
+          status: "online",
+          currentEnergyKwh: 0.0001,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ solarIrradiance: { wPerM2: 0, condition: "night" } }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    await runCli(["tick", "--ticks", "3600"]);
+    const { output, errors } = await runCli(["module", "show", "workshop-fabricator"]);
+
+    expect(errors).toHaveLength(0);
+    expect(output.some((line) => line.includes("Declared state"))).toBe(true);
+    expect(output.some((line) => line.includes("offline"))).toBe(true);
+    expect(output.some((line) => line.includes("construction in progress"))).toBe(false);
+  });
+
+  test("power overview reports module-level sources and sinks", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "small-solar-array",
+        selector: "small-solar-array-1",
+        displayName: "Small Solar Array",
+        runtimeAttributes: {
+          status: "online",
+          powerGenerationKw: 12,
+        },
+        capabilities: ["solar-generation"],
+      }),
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery One",
+        runtimeAttributes: {
+          status: "online",
+          currentEnergyKwh: 9,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+    ]);
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ solarIrradiance: { wPerM2: 900, condition: "clear" } }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })) as typeof fetch;
+
+    const { output, errors } = await runCli(["power", "overview"]);
+
+    expect(errors).toHaveLength(0);
+    expect(output.some((line) => line.includes("Power overview at 900 W/m2 solar irradiance"))).toBe(true);
+    expect(output.some((line) => line.includes("small-solar-array-1"))).toBe(true);
+    expect(output.some((line) => line.includes("Solar Generation"))).toBe(true);
+    expect(output.some((line) => line.includes("basic-battery-1"))).toBe(true);
+    expect(output.some((line) => line.includes("online"))).toBe(true);
+  });
+
+  test("unregister clears local habitat state before a new registration starts", async () => {
+    seedRegisteredState(tempDir, {
+      blueprints: [],
+    });
+    seedInventory(tempDir, [
+      createInventoryItem({
+        resourceId: "ferrite",
+        displayName: "Ferrite",
+        quantity: 42,
+      }),
+    ]);
+    seedConstruction(tempDir, {
+      activeJob: createConstructionJob({
+        blueprintId: "command-module",
+        displayName: "Command Module",
+        moduleType: "command-module",
+        selector: "command-module-1",
+        fabricatorId: "workshop-fabricator-1",
+        fabricatorSelector: "workshop-fabricator-1",
+        pendingModuleName: "Command Module",
+        connectedTo: [],
+        ticksRequired: 5,
+        ticksRemaining: 5,
+        consumedInputs: [],
+        runtimeAttributes: {},
+        capabilities: [],
+      }),
+    });
+    seedModules(tempDir, [
+      createModule({
+        blueprintId: "basic-battery",
+        selector: "basic-battery-1",
+        displayName: "Basic Battery",
+        runtimeAttributes: {
+          status: "offline",
+          energyKwh: 0,
+          energyStorageKwh: 10,
+        },
+        capabilities: ["power-storage"],
+      }),
+    ]);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith("/habitats/habitat_test") && init?.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+
+      if (url.endsWith("/habitats/register") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            habitatId: "habitat_test",
+            starterModules: [
+              {
+                id: "habitat_test_basic_battery_1",
+                selector: "basic-battery-1",
+                blueprintId: "basic-battery",
+                displayName: "Basic Battery",
+                connectedTo: [],
+                runtimeAttributes: {
+                  status: "online",
+                  energyKwh: 10,
+                  energyStorageKwh: 10,
+                },
+                capabilities: ["power-storage"],
+              },
+            ],
+            blueprints: [],
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      if (url.endsWith("/habitats/habitat_test")) {
+        return new Response(
+          JSON.stringify({
+            habitat: {
+              id: "habitat_test",
+              habitatSlug: "test-habitat",
+              displayName: "Test Habitat",
+              catalogVersion: "v1",
+              status: "registered",
+              lastSeenAt: null,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      const unregisterResult = await runCli(["unregister"]);
+      expect(unregisterResult.errors).toHaveLength(0);
+      expect(readInventory(tempDir).items).toEqual([]);
+      expect(readConstruction(tempDir).activeJob).toBeNull();
+      expect(readModules(tempDir)).toEqual([]);
+
+      const registerResult = await runCli(["register", "--name", "Test Habitat"]);
+      expect(registerResult.errors).toHaveLength(0);
+      expect(readInventory(tempDir).items).toEqual([]);
+      expect(readConstruction(tempDir).activeJob).toBeNull();
+      expect(readModules(tempDir)).toHaveLength(1);
+      expect(readModules(tempDir)[0]?.runtimeAttributes.status).toBe("online");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("module construct remains available as a backward-compatible alias", async () => {
     seedRegisteredState(tempDir, {
       blueprints: [
@@ -772,53 +1279,193 @@ function createModule(
 }
 
 function seedRegisteredState(tempDir: string, overrides: { blueprints: HabitatBlueprint[] }): void {
-  writeJson(path.join(tempDir, "data", "kepler.json"), {
-    habitatId: "habitat_test",
-    habitatUuid: "habitat-test-uuid",
-    displayName: "Test Habitat",
-    habitat: {
-      id: "habitat_test",
-      habitatSlug: "test-habitat",
-      displayName: "Test Habitat",
-      catalogVersion: "test-catalog",
-      status: "registered",
-      lastSeenAt: null,
-    },
-    blueprints: overrides.blueprints,
+  withDatabase(tempDir, (db) => {
+    db.run("DELETE FROM kepler_registration;");
+    db.run("DELETE FROM habitat_modules;");
+    db.run("DELETE FROM construction_state;");
+    db.run("DELETE FROM inventory_items;");
+    db.query(
+      `INSERT INTO kepler_registration (habitat_id, habitat_uuid, display_name, habitat_json, blueprints_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      "habitat_test",
+      "habitat-test-uuid",
+      "Test Habitat",
+      JSON.stringify({
+        id: "habitat_test",
+        habitatSlug: "test-habitat",
+        displayName: "Test Habitat",
+        catalogVersion: "test-catalog",
+        status: "registered",
+        lastSeenAt: null,
+      }),
+      JSON.stringify(overrides.blueprints),
+    );
   });
 }
 
 function seedInventory(tempDir: string, items: HabitatInventoryItem[]): void {
-  writeJson(path.join(tempDir, "data", "inventory.json"), {
-    items,
+  withDatabase(tempDir, (db) => {
+    db.run("DELETE FROM inventory_items;");
+    const insert = db.query(
+      `INSERT INTO inventory_items (resource_id, display_name, quantity, unit, category, source, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const item of items) {
+      insert.run(item.resourceId, item.displayName, item.quantity, item.unit, item.category, item.source, item.updatedAt);
+    }
   });
 }
 
 function seedModules(tempDir: string, modules: HabitatModule[]): void {
-  writeJson(path.join(tempDir, "data", "habitat-modules.json"), modules);
+  const commandModule = createModule({
+    blueprintId: "command-module",
+    selector: "command-module-1",
+    displayName: "Command Module",
+    runtimeAttributes: {
+      status: "online",
+      powerDrawKw: {
+        offline: 0,
+        online: 0,
+        active: 0,
+        damaged: 0,
+      },
+    },
+    capabilities: ["habitat-command"],
+  });
+  const nextModules = modules.some((module) => module.blueprintId === "command-module")
+    ? modules
+    : [commandModule, ...modules];
+  withDatabase(tempDir, (db) => {
+    db.run("DELETE FROM habitat_modules;");
+    const insert = db.query(
+      `INSERT INTO habitat_modules (id, selector, blueprint_id, display_name, connected_to_json, runtime_attributes_json, capabilities_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const module of nextModules) {
+      insert.run(
+        module.id,
+        module.selector,
+        module.blueprintId,
+        module.displayName,
+        JSON.stringify(module.connectedTo),
+        JSON.stringify(module.runtimeAttributes),
+        JSON.stringify(module.capabilities),
+      );
+    }
+  });
+}
+
+function seedConstruction(tempDir: string, state: { activeJob: HabitatConstructionJob | null }): void {
+  withDatabase(tempDir, (db) => {
+    db.run("DELETE FROM construction_state;");
+    db.query(`INSERT INTO construction_state (id, active_job_json) VALUES (1, ?)`).run(JSON.stringify(state.activeJob));
+  });
 }
 
 function readInventory(tempDir: string): { items: HabitatInventoryItem[] } {
-  return readJson(path.join(tempDir, "data", "inventory.json"), { items: [] as HabitatInventoryItem[] });
+  return withDatabase(tempDir, (db) => {
+    const rows = db
+      .query(
+        `SELECT resource_id AS resourceId, display_name AS displayName, quantity, unit, category, source, updated_at AS updatedAt
+         FROM inventory_items
+         ORDER BY resource_id`,
+      )
+      .all() as HabitatInventoryItem[];
+    return { items: rows };
+  });
 }
 
 function readConstruction(tempDir: string): { activeJob: null | { ticksRemaining: number } } {
-  return readJson(path.join(tempDir, "data", "construction.json"), { activeJob: null });
+  return withDatabase(tempDir, (db) => {
+    const row = db
+      .query(`SELECT active_job_json AS activeJobJson FROM construction_state WHERE id = 1 LIMIT 1`)
+      .get() as { activeJobJson?: string } | undefined;
+    return { activeJob: row?.activeJobJson ? (JSON.parse(row.activeJobJson) as { ticksRemaining: number }) : null };
+  });
 }
 
 function readModules(tempDir: string): HabitatModule[] {
-  return readJson(path.join(tempDir, "data", "habitat-modules.json"), [] as HabitatModule[]);
+  return withDatabase(tempDir, (db) => {
+    const rows = db
+      .query(
+        `SELECT id, selector, blueprint_id AS blueprintId, display_name AS displayName, connected_to_json AS connectedToJson,
+                runtime_attributes_json AS runtimeAttributesJson, capabilities_json AS capabilitiesJson
+         FROM habitat_modules`,
+      )
+      .all() as Array<{
+      id: string;
+      selector: string;
+      blueprintId: string;
+      displayName: string;
+      connectedToJson: string;
+      runtimeAttributesJson: string;
+      capabilitiesJson: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      selector: row.selector,
+      blueprintId: row.blueprintId,
+      displayName: row.displayName,
+      connectedTo: JSON.parse(row.connectedToJson),
+      runtimeAttributes: JSON.parse(row.runtimeAttributesJson),
+      capabilities: JSON.parse(row.capabilitiesJson),
+    }));
+  });
 }
 
-function writeJson(filePath: string, value: unknown): void {
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+function createConstructionJob(overrides: HabitatConstructionJob): HabitatConstructionJob {
+  return {
+    startedAt: "2026-07-09T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
-function readJson<T>(filePath: string, fallback: T): T {
+function withDatabase<T>(tempDir: string, callback: (db: Database) => T): T {
+  const dataDir = path.join(tempDir, "data");
+  mkdirSync(dataDir, { recursive: true });
+  const db = new Database(path.join(dataDir, "habitat.sqlite"));
   try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as T;
-  } catch {
-    return fallback;
+    db.run("PRAGMA foreign_keys = ON;");
+    db.run(`
+      CREATE TABLE IF NOT EXISTS kepler_registration (
+        habitat_id TEXT PRIMARY KEY,
+        habitat_uuid TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        habitat_json TEXT NOT NULL,
+        blueprints_json TEXT NOT NULL
+      );
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS habitat_modules (
+        id TEXT PRIMARY KEY,
+        selector TEXT NOT NULL,
+        blueprint_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        connected_to_json TEXT NOT NULL,
+        runtime_attributes_json TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL
+      );
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS inventory_items (
+        resource_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        unit TEXT NOT NULL,
+        category TEXT NOT NULL,
+        source TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS construction_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        active_job_json TEXT NOT NULL
+      );
+    `);
+    return callback(db);
+  } finally {
+    db.close();
   }
 }

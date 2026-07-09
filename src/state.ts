@@ -1,19 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   type HabitatBlueprint,
   type HabitatModule,
   type KeplerBlueprint,
   type KeplerHabitat,
   type KeplerRegistration,
-  type LoadableKeplerState,
 } from "./types.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const defaultDataDirectory = path.resolve(__dirname, "../data");
+import { ensureDataDirectory, withDatabase } from "./sqlite-state.js";
 
 export function ensureKeplerEnv(baseUrl: string, planetToken: string): void {
   if (!baseUrl || !planetToken) {
@@ -22,92 +15,145 @@ export function ensureKeplerEnv(baseUrl: string, planetToken: string): void {
 }
 
 export function loadKeplerRegistration(): KeplerRegistration | null {
-  ensureKeplerStateFile();
+  ensureDataDirectory();
 
-  try {
-    const raw = JSON.parse(readFileSync(getKeplerStateFilePath(), "utf8")) as LoadableKeplerState;
+  const registration = withDatabase((db) => {
+    const row = db
+      .query(
+        `SELECT habitat_id AS habitatId, habitat_uuid AS habitatUuid, display_name AS displayName, habitat_json AS habitatJson, blueprints_json AS blueprintsJson
+         FROM kepler_registration
+         LIMIT 1`,
+      )
+      .get() as
+      | {
+          habitatId: string;
+          habitatUuid: string;
+          displayName: string;
+          habitatJson: string;
+          blueprintsJson: string;
+        }
+      | undefined;
 
-    if (
-      typeof raw.habitatId === "string" &&
-      typeof raw.habitatUuid === "string" &&
-      typeof raw.displayName === "string" &&
-      raw.habitat !== undefined &&
-      raw.habitat !== null
-    ) {
-      return {
-        habitatId: raw.habitatId,
-        habitatUuid: raw.habitatUuid,
-        displayName: raw.displayName,
-        habitat: raw.habitat as KeplerHabitat,
-        modules: loadHabitatModules(),
-        blueprints: Array.isArray(raw.blueprints) ? raw.blueprints.map(normalizeBlueprint) : [],
-      };
+    if (!row) {
+      return null;
     }
-  } catch {
-    // Ignore malformed cache and treat as unregistered.
+
+    try {
+      return {
+        habitatId: row.habitatId,
+        habitatUuid: row.habitatUuid,
+        displayName: row.displayName,
+        habitat: JSON.parse(row.habitatJson) as KeplerHabitat,
+        modules: loadHabitatModules(),
+        blueprints: JSON.parse(row.blueprintsJson) as HabitatBlueprint[],
+      };
+    } catch {
+      return null;
+    }
+  });
+
+  if (registration) {
+    return registration;
   }
 
   return null;
 }
 
 export function saveKeplerRegistration(registration: KeplerRegistration): void {
-  ensureKeplerStateFile();
-  const filePath = getKeplerStateFilePath();
-  const temporaryFilePath = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(
-    temporaryFilePath,
-    `${JSON.stringify(
-      {
-        habitatId: registration.habitatId,
-        habitatUuid: registration.habitatUuid,
-        displayName: registration.displayName,
-        habitat: registration.habitat,
-        blueprints: registration.blueprints,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-  renameSync(temporaryFilePath, filePath);
+  ensureDataDirectory();
+  withDatabase((db) => {
+    db.run("DELETE FROM kepler_registration;");
+    db.query(
+      `INSERT INTO kepler_registration (habitat_id, habitat_uuid, display_name, habitat_json, blueprints_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      registration.habitatId,
+      registration.habitatUuid,
+      registration.displayName,
+      JSON.stringify(registration.habitat),
+      JSON.stringify(registration.blueprints),
+    );
+  });
 }
 
 export function clearKeplerRegistration(): void {
-  ensureKeplerStateFile();
-  writeFileSync(getKeplerStateFilePath(), "{}\n", "utf8");
+  ensureDataDirectory();
+  withDatabase((db) => {
+    db.run("DELETE FROM kepler_registration;");
+  });
+}
+
+export function clearLocalHabitatState(): void {
+  ensureDataDirectory();
+  withDatabase((db) => {
+    db.transaction(() => {
+      db.run("DELETE FROM kepler_registration;");
+      db.run("DELETE FROM habitat_modules;");
+      db.run("DELETE FROM inventory_items;");
+      db.run("DELETE FROM construction_state;");
+    })();
+  });
 }
 
 export function saveHabitatModules(modules: HabitatModule[]): void {
-  ensureHabitatModulesFile();
-  const filePath = getHabitatModulesFilePath();
-  const temporaryFilePath = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(temporaryFilePath, `${JSON.stringify(modules, null, 2)}\n`, "utf8");
-  renameSync(temporaryFilePath, filePath);
+  ensureDataDirectory();
+  withDatabase((db) => {
+    db.transaction(() => {
+      db.run("DELETE FROM habitat_modules;");
+      const insert = db.query(
+        `INSERT INTO habitat_modules (id, selector, blueprint_id, display_name, connected_to_json, runtime_attributes_json, capabilities_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const module of modules) {
+        insert.run(
+          module.id,
+          module.selector,
+          module.blueprintId,
+          module.displayName,
+          JSON.stringify(module.connectedTo),
+          JSON.stringify(module.runtimeAttributes),
+          JSON.stringify(module.capabilities),
+        );
+      }
+    })();
+  });
 }
 
 export function loadHabitatModules(): HabitatModule[] {
-  ensureHabitatModulesFile();
+  ensureDataDirectory();
 
-  try {
-    const raw = JSON.parse(readFileSync(getHabitatModulesFilePath(), "utf8"));
+  const modules = withDatabase((db) => {
+    const rows = db
+      .query(
+        `SELECT id, selector, blueprint_id AS blueprintId, display_name AS displayName, connected_to_json AS connectedToJson,
+                runtime_attributes_json AS runtimeAttributesJson, capabilities_json AS capabilitiesJson
+         FROM habitat_modules`,
+      )
+      .all() as Array<{
+      id: string;
+      selector: string;
+      blueprintId: string;
+      displayName: string;
+      connectedToJson: string;
+      runtimeAttributesJson: string;
+      capabilitiesJson: string;
+    }>;
 
-    if (Array.isArray(raw) && raw.length > 0) {
-      return raw.map(normalizeModule);
-    }
-  } catch {
-    // Fall through to legacy migration below.
-  }
+    return rows.map((row) =>
+      normalizeModule({
+        id: row.id,
+        selector: row.selector,
+        blueprintId: row.blueprintId,
+        displayName: row.displayName,
+        connectedTo: JSON.parse(row.connectedToJson),
+        runtimeAttributes: JSON.parse(row.runtimeAttributesJson),
+        capabilities: JSON.parse(row.capabilitiesJson),
+      }),
+    );
+  });
 
-  try {
-    const legacyRegistration = JSON.parse(readFileSync(getKeplerStateFilePath(), "utf8")) as LoadableKeplerState;
-
-    if (Array.isArray(legacyRegistration.modules) && legacyRegistration.modules.length > 0) {
-      const modules = legacyRegistration.modules.map(normalizeModule);
-      saveHabitatModules(modules);
-      return modules;
-    }
-  } catch {
-    // Ignore malformed legacy cache and return an empty module list.
+  if (modules.length > 0) {
+    return modules;
   }
 
   return [];
@@ -124,42 +170,64 @@ export function loadStateOrFail(): KeplerRegistration {
 }
 
 export function saveState(registration: KeplerRegistration): void {
-  saveKeplerRegistration(registration);
-  saveHabitatModules(registration.modules);
+  withDatabase((db) => {
+    db.transaction(() => {
+      db.run("DELETE FROM kepler_registration;");
+      db.run("DELETE FROM habitat_modules;");
+      db.query(
+        `INSERT INTO kepler_registration (habitat_id, habitat_uuid, display_name, habitat_json, blueprints_json)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        registration.habitatId,
+        registration.habitatUuid,
+        registration.displayName,
+        JSON.stringify(registration.habitat),
+        JSON.stringify(registration.blueprints),
+      );
+
+      const insert = db.query(
+        `INSERT INTO habitat_modules (id, selector, blueprint_id, display_name, connected_to_json, runtime_attributes_json, capabilities_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const module of registration.modules) {
+        insert.run(
+          module.id,
+          module.selector,
+          module.blueprintId,
+          module.displayName,
+          JSON.stringify(module.connectedTo),
+          JSON.stringify(module.runtimeAttributes),
+          JSON.stringify(module.capabilities),
+        );
+      }
+    })();
+  });
 }
 
-function ensureKeplerStateFile(): void {
-  mkdirSync(getDataDirectory(), { recursive: true });
-
-  try {
-    readFileSync(getKeplerStateFilePath(), "utf8");
-  } catch {
-    writeFileSync(getKeplerStateFilePath(), "{}\n", "utf8");
+export function ensureDefaultModuleRuntimeStatus(module: HabitatModule): HabitatModule {
+  if (!module.capabilities.includes("power-storage")) {
+    return module;
   }
-}
 
-function ensureHabitatModulesFile(): void {
-  mkdirSync(getDataDirectory(), { recursive: true });
+  const status = module.runtimeAttributes.status;
 
-  try {
-    readFileSync(getHabitatModulesFilePath(), "utf8");
-  } catch {
-    writeFileSync(getHabitatModulesFilePath(), "[]\n", "utf8");
+  if (
+    status === "online" ||
+    status === "offline" ||
+    status === "idle" ||
+    status === "active" ||
+    status === "damaged"
+  ) {
+    return module;
   }
-}
 
-function getDataDirectory(): string {
-  return process.env.HABITAT_DATA_DIRECTORY
-    ? path.resolve(process.env.HABITAT_DATA_DIRECTORY)
-    : defaultDataDirectory;
-}
-
-function getKeplerStateFilePath(): string {
-  return path.join(getDataDirectory(), "kepler.json");
-}
-
-function getHabitatModulesFilePath(): string {
-  return path.join(getDataDirectory(), "habitat-modules.json");
+  return {
+    ...module,
+    runtimeAttributes: {
+      ...module.runtimeAttributes,
+      status: "online",
+    },
+  };
 }
 
 function normalizeModule(rawModule: unknown): HabitatModule {
@@ -168,7 +236,7 @@ function normalizeModule(rawModule: unknown): HabitatModule {
   const baseSelector =
     typeof input.selector === "string" ? input.selector : deriveSelector(typeof input.id === "string" ? input.id : displayName);
 
-  return {
+  return ensureDefaultModuleRuntimeStatus({
     id: typeof input.id === "string" ? input.id : randomUUID(),
     selector: baseSelector,
     blueprintId: typeof input.blueprintId === "string" ? input.blueprintId : "unknown-blueprint",
@@ -176,7 +244,7 @@ function normalizeModule(rawModule: unknown): HabitatModule {
     connectedTo: Array.isArray(input.connectedTo) ? input.connectedTo.filter(isString) : [],
     runtimeAttributes: isObject(input.runtimeAttributes) ? input.runtimeAttributes : {},
     capabilities: Array.isArray(input.capabilities) ? input.capabilities.filter(isString) : [],
-  };
+  });
 }
 
 function normalizeBlueprint(rawBlueprint: unknown): HabitatBlueprint {

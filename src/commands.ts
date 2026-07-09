@@ -1,17 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { Command, InvalidArgumentError } from "commander";
 import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
-import { createKeplerCatalogClient, type KeplerCatalogBlueprint, type KeplerCatalogResource } from "./kepler-catalog.js";
+import {
+  createKeplerCatalogClient,
+  type KeplerCatalogBlueprint,
+  type KeplerCatalogClient,
+  type KeplerCatalogResource,
+} from "./kepler-catalog.js";
 import { addInventoryQuantity, loadInventoryState, setInventoryQuantity } from "./inventory-state.js";
 import {
   ensureKeplerEnv,
-  clearKeplerRegistration,
+  clearLocalHabitatState,
+  ensureDefaultModuleRuntimeStatus,
   loadKeplerRegistration,
   loadStateOrFail,
   saveState,
 } from "./state.js";
 import {
   applyTick,
+  applyTickWithSolarIrradiance,
   buildModuleStatusRows,
   formatConstructionReadinessReport,
   formatConstructionProgress,
@@ -24,7 +31,10 @@ import {
   formatModuleDetails,
   formatModuleSummary,
   formatPowerDraw,
+  formatPowerOverview,
   formatResourceList,
+  formatSolarIrradiance,
+  getDeclaredModuleStatus,
   getModulePowerDraw,
   powerDrawToEnergyCost,
   renderTextTable,
@@ -32,12 +42,15 @@ import {
 } from "./formatters.js";
 import type { KeplerBlueprint, HabitatBlueprint, HabitatModule, KeplerRegistration, KeplerStarterModule } from "./types.js";
 
-const keplerBaseUrl = process.env.KEPLER_BASE_URL ?? "";
-const keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
-const keplerCatalogClient = createKeplerCatalogClient(keplerBaseUrl, keplerPlanetToken);
+let keplerCatalogClient: KeplerCatalogClient;
+let keplerBaseUrl = "";
+let keplerPlanetToken = "";
 
 export function createProgram(): Command {
   const program = new Command();
+  keplerBaseUrl = process.env.KEPLER_BASE_URL ?? "";
+  keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
+  keplerCatalogClient = createKeplerCatalogClient(keplerBaseUrl, keplerPlanetToken);
 
   program.name("habitat").description("Register this Habitat CLI with Kepler and inspect its status.").version("0.1.0");
 
@@ -99,17 +112,18 @@ export function createProgram(): Command {
     .description("Advance habitat power consumption by one or more ticks.")
     .option("--ticks <ticks>", "number of ticks to advance", (value) => parsePositiveNumber(value, "ticks"), 1)
     .argument("[unit]", "seconds or hours")
-    .action((unit: string | undefined, options: { ticks: number }) => {
+    .action(async (unit: string | undefined, options: { ticks: number }) => {
       try {
         const registration = loadStateOrFail();
         const tickCount = Math.floor(options.ticks);
         const secondsPerTick = parseTickUnit(unit);
+        const solarIrradiance = await keplerCatalogClient.getSolarIrradiance();
 
         if (tickCount <= 0) {
           throw new Error("ticks must be greater than zero.");
         }
 
-        const nextState = applyTick(registration, tickCount * secondsPerTick);
+        const nextState = applyTickWithSolarIrradiance(registration, tickCount * secondsPerTick, solarIrradiance);
         const constructionResult = advanceConstruction(tickCount * secondsPerTick);
         const completedModule = constructionResult.completedJob
           ? createConstructedModule(nextState.registration, constructionResult.completedJob)
@@ -125,13 +139,33 @@ export function createProgram(): Command {
 
         console.log(`Advanced ${tickCount} tick(s) at ${secondsPerTick} second(s) per tick.`);
         console.log(`Total power draw: ${formatEnergyCost(nextState.totalPowerDraw)} kWh.`);
+        console.log(`Total solar generation: ${formatEnergyCost(nextState.totalSolarGeneration)} kWh.`);
         console.log(`Battery charge: ${nextState.batteryBefore} kWh -> ${nextState.batteryAfter} kWh.`);
+        if (nextState.solarChargeReason) {
+          console.log(nextState.solarChargeReason);
+        }
         if (constructionResult.activeJob) {
           console.log(formatConstructionProgress(constructionResult.activeJob));
         }
         if (completedModule) {
           console.log(`Construction completed: ${completedModule.displayName} (${completedModule.selector}).`);
         }
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  const solarCommand = program.command("solar").description("Inspect solar conditions from Kepler.");
+
+  solarCommand
+    .command("status")
+    .description("Show the current solar irradiance from Kepler.")
+    .action(async () => {
+      try {
+        ensureKeplerBaseUrl();
+        const solarIrradiance = await keplerCatalogClient.getSolarIrradiance();
+        console.log(formatSolarIrradiance(solarIrradiance));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -164,6 +198,7 @@ export function createProgram(): Command {
   const inventoryCommand = program.command("inventory").description("Manage local habitat inventory.");
   const constructionCommand = program.command("construction").description("Inspect local module construction.");
   const constructAction = createConstructAction();
+  const powerCommand = program.command("power").description("Inspect local power behavior.");
 
   blueprintCommand
     .command("list")
@@ -367,7 +402,6 @@ export function createProgram(): Command {
     .action(() => {
       try {
         const registration = loadStateOrFail();
-
         if (registration.modules.length === 0) {
           console.log("No modules found.");
           return;
@@ -378,6 +412,20 @@ export function createProgram(): Command {
         console.log(
           `Total current power draw: ${formatPowerDraw(sumModulePowerDraw(registration))} kW; one tick energy cost: ${formatEnergyCost(powerDrawToEnergyCost(sumModulePowerDraw(registration), 1))} kWh.`,
         );
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  powerCommand
+    .command("overview")
+    .description("Show the current power sources and sinks.")
+    .action(async () => {
+      try {
+        const registration = loadStateOrFail();
+        const solarIrradiance = await keplerCatalogClient.getSolarIrradiance();
+        console.log(formatPowerOverview(registration, solarIrradiance));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -458,7 +506,7 @@ export function createProgram(): Command {
 
           saveState({
             ...registration,
-            modules: [...registration.modules, newModule],
+            modules: [...registration.modules, ensureDefaultModuleRuntimeStatus(newModule)],
           });
 
           console.log(`Module created: ${newModule.displayName}`);
@@ -475,7 +523,6 @@ export function createProgram(): Command {
     .action(() => {
       try {
         const registration = loadStateOrFail();
-
         if (registration.modules.length === 0) {
           console.log("No modules found.");
           return;
@@ -631,26 +678,31 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
     habitatUuid,
     displayName,
     habitat,
-    modules: payload.starterModules.map((starterModule) => ({
-      id: starterModule.id,
-      selector: makeUniqueSelector(
-        starterModule.id,
-        payload.starterModules.map((module) => ({
-          id: module.id,
-          selector: deriveSelector(module.id),
-          blueprintId: module.blueprintId,
-          displayName: module.displayName,
-          connectedTo: module.connectedTo,
-          runtimeAttributes: module.runtimeAttributes,
-          capabilities: module.capabilities,
-        })),
-      ),
-      blueprintId: starterModule.blueprintId,
-      displayName: starterModule.displayName,
-      connectedTo: starterModule.connectedTo,
-      runtimeAttributes: starterModule.runtimeAttributes,
-      capabilities: starterModule.capabilities,
-    })),
+    modules: payload.starterModules.map((starterModule) =>
+      ensureDefaultModuleRuntimeStatus({
+        id: starterModule.id,
+        selector: makeUniqueSelector(
+          starterModule.id,
+          payload.starterModules.map((module) => ({
+            id: module.id,
+            selector: deriveSelector(module.id),
+            blueprintId: module.blueprintId,
+            displayName: module.displayName,
+            connectedTo: module.connectedTo,
+            runtimeAttributes: module.runtimeAttributes,
+            capabilities: module.capabilities,
+          })),
+        ),
+        blueprintId: starterModule.blueprintId,
+        displayName: starterModule.displayName,
+        connectedTo: starterModule.connectedTo,
+        runtimeAttributes: {
+          ...starterModule.runtimeAttributes,
+          ...(starterModule.capabilities.includes("power-storage") ? { status: "online" } : {}),
+        },
+        capabilities: starterModule.capabilities,
+      }),
+    ),
     blueprints: payload.blueprints.map((blueprint) => ({
       blueprintId: blueprint.blueprintId,
       displayName: blueprint.displayName,
@@ -702,7 +754,7 @@ async function unregisterFromKepler(habitatId: string): Promise<void> {
   });
 
   if (response.status === 404) {
-    clearKeplerRegistration();
+    clearLocalHabitatState();
     return;
   }
 
@@ -710,7 +762,7 @@ async function unregisterFromKepler(habitatId: string): Promise<void> {
     throw new Error(`Kepler unregister failed with ${response.status} ${response.statusText}`);
   }
 
-  clearKeplerRegistration();
+  clearLocalHabitatState();
 }
 
 async function listBlueprints(): Promise<KeplerCatalogBlueprint[]> {
@@ -787,6 +839,12 @@ function parseTickUnit(value: string | undefined): number {
   }
 
   throw new InvalidArgumentError("Tick unit must be seconds or hours.");
+}
+
+function ensureKeplerBaseUrl(): void {
+  if (!process.env.KEPLER_BASE_URL) {
+    throw new Error("Missing KEPLER_BASE_URL in .env.");
+  }
 }
 
 function resolveModule(registration: KeplerRegistration, selector: string): HabitatModule {
@@ -875,7 +933,7 @@ function createConstructedModule(registration: KeplerRegistration, job: import("
   const identifier = `${registration.habitatId}_${job.moduleType}_${nextNumber}`;
   const selectorSeed = `${job.moduleType}_${nextNumber}`;
 
-  return {
+  return ensureDefaultModuleRuntimeStatus({
     id: identifier,
     selector: makeUniqueSelector(selectorSeed, registration.modules),
     blueprintId: job.blueprintId,
@@ -883,7 +941,7 @@ function createConstructedModule(registration: KeplerRegistration, job: import("
     connectedTo: job.connectedTo,
     runtimeAttributes: job.runtimeAttributes,
     capabilities: job.capabilities,
-  };
+  });
 }
 
 function stripBlueprintSuffix(displayName: string): string {
@@ -894,6 +952,7 @@ function createConstructAction(): (blueprintId: string, options: { dryRun?: bool
   return (blueprintId: string, options: { dryRun?: boolean }) => {
     try {
       const registration = loadStateOrFail();
+      ensureHabitatIsConnected(registration);
       const blueprint = requireBlueprint(registration, blueprintId);
       const result = startConstruction({
         blueprint,
@@ -938,4 +997,18 @@ function createConstructAction(): (blueprintId: string, options: { dryRun?: bool
       process.exitCode = 1;
     }
   };
+}
+
+function ensureHabitatIsConnected(registration: KeplerRegistration): void {
+  const commandModule = registration.modules.find((module) => module.blueprintId === "command-module");
+
+  if (!commandModule) {
+    throw new Error("Habitat is not connected. The command module is missing.");
+  }
+
+  const status = getDeclaredModuleStatus(commandModule);
+
+  if (status !== "online" && status !== "active") {
+    throw new Error("Habitat is not connected. The command module is offline.");
+  }
 }

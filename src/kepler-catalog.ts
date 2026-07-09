@@ -46,10 +46,20 @@ type KeplerResourceCatalogResponse = {
   catalog?: KeplerCatalogResource[];
 };
 
+type KeplerSolarIrradianceResponse = {
+  solarIrradiance?: unknown;
+};
+
 export type KeplerCatalogClient = {
   listBlueprints: () => Promise<KeplerCatalogBlueprint[]>;
   getBlueprint: (blueprintId: string) => Promise<KeplerCatalogBlueprint | null>;
   listResources: () => Promise<KeplerCatalogResource[]>;
+  getSolarIrradiance: () => Promise<KeplerSolarIrradiance>;
+};
+
+export type KeplerSolarIrradiance = {
+  wPerM2: number;
+  [key: string]: unknown;
 };
 
 export function createKeplerCatalogClient(baseUrl: string, planetToken: string): KeplerCatalogClient {
@@ -99,6 +109,15 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
 
       const payload = (await response.json()) as KeplerResourceCatalogResponse;
       return normalizeResourceList(payload);
+    },
+    async getSolarIrradiance() {
+      const response = await fetch(`${baseUrl}/world/solar-irradiance`);
+
+      if (!response.ok) {
+        throw new Error(`Kepler solar irradiance request failed with ${response.status} ${response.statusText}`);
+      }
+
+      return normalizeSolarIrradiance(await response.json());
     },
   };
 }
@@ -225,6 +244,21 @@ function normalizeResourceRecord(rawResource: unknown): KeplerCatalogResource | 
     massPerUnitKg: typeof input.massPerUnitKg === "number" ? input.massPerUnitKg : null,
     storageHint: typeof input.storageHint === "string" ? input.storageHint : undefined,
     tags: Array.isArray(input.tags) ? input.tags.filter(isString) : [],
+  };
+}
+
+function normalizeSolarIrradiance(rawSolarIrradiance: unknown): KeplerSolarIrradiance {
+  if (isRecord(rawSolarIrradiance) && "solarIrradiance" in rawSolarIrradiance) {
+    return normalizeSolarIrradiance((rawSolarIrradiance as KeplerSolarIrradianceResponse).solarIrradiance);
+  }
+
+  if (!isRecord(rawSolarIrradiance)) {
+    return { wPerM2: 0 };
+  }
+
+  return {
+    wPerM2: typeof rawSolarIrradiance.wPerM2 === "number" ? rawSolarIrradiance.wPerM2 : 0,
+    ...rawSolarIrradiance,
   };
 }
 

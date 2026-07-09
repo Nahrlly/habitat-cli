@@ -1,6 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { withDatabase } from "./sqlite-state.js";
 import type {
   ConsumedConstructionInput,
   ConstructionShortage,
@@ -8,11 +6,6 @@ import type {
   HabitatInventoryItem,
   HabitatInventoryState,
 } from "./types.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const defaultDataDirectory = path.resolve(__dirname, "../data");
-const inventoryStateFileName = "inventory.json";
 
 type InventoryMutationInput = {
   resourceId: string;
@@ -31,32 +24,50 @@ type AddInventoryInput = {
 };
 
 export function loadInventoryState(): HabitatInventoryState {
-  ensureInventoryStateFile();
+  const items = withDatabase((db) => {
+    const rows = db
+      .query(
+        `SELECT resource_id AS resourceId, display_name AS displayName, quantity, unit, category, source, updated_at AS updatedAt
+         FROM inventory_items
+         ORDER BY resource_id`,
+      )
+      .all() as Array<{
+      resourceId: string;
+      displayName: string;
+      quantity: number;
+      unit: string;
+      category: string;
+      source: string;
+      updatedAt: string;
+    }>;
 
-  try {
-    const raw = JSON.parse(readFileSync(getInventoryStateFilePath(), "utf8")) as { items?: unknown };
+    return rows.map((row) => normalizeInventoryItem(row)).sort(compareInventoryItems);
+  });
 
-    if (Array.isArray(raw.items)) {
-      return {
-        items: raw.items.map(normalizeInventoryItem).sort(compareInventoryItems),
-      };
-    }
-  } catch {
-    // Ignore malformed state and recover to an empty inventory.
+  if (items.length > 0) {
+    return { items };
   }
 
   return { items: [] };
 }
 
 export function saveInventoryState(state: HabitatInventoryState): void {
-  ensureInventoryStateFile();
-  const filePath = getInventoryStateFilePath();
-  const temporaryFilePath = `${filePath}.${process.pid}.tmp`;
   const normalizedState: HabitatInventoryState = {
     items: state.items.map(normalizeInventoryItem).sort(compareInventoryItems),
   };
-  writeFileSync(temporaryFilePath, `${JSON.stringify(normalizedState, null, 2)}\n`, "utf8");
-  renameSync(temporaryFilePath, filePath);
+
+  withDatabase((db) => {
+    db.transaction(() => {
+      db.run("DELETE FROM inventory_items;");
+      const insert = db.query(
+        `INSERT INTO inventory_items (resource_id, display_name, quantity, unit, category, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const item of normalizedState.items) {
+        insert.run(item.resourceId, item.displayName, item.quantity, item.unit, item.category, item.source, item.updatedAt);
+      }
+    })();
+  });
 }
 
 export function setInventoryQuantity(input: InventoryMutationInput): HabitatInventoryItem {
@@ -136,26 +147,6 @@ export function subtractInventoryInputs(inputs: Record<string, unknown>): Habita
   });
 
   return nextItems;
-}
-
-function getInventoryStateFilePath(): string {
-  return path.join(getDataDirectory(), inventoryStateFileName);
-}
-
-function getDataDirectory(): string {
-  return process.env.HABITAT_DATA_DIRECTORY
-    ? path.resolve(process.env.HABITAT_DATA_DIRECTORY)
-    : defaultDataDirectory;
-}
-
-function ensureInventoryStateFile(): void {
-  mkdirSync(getDataDirectory(), { recursive: true });
-
-  try {
-    readFileSync(getInventoryStateFilePath(), "utf8");
-  } catch {
-    writeFileSync(getInventoryStateFilePath(), '{\n  "items": []\n}\n', "utf8");
-  }
 }
 
 function buildInventoryItem(existingItems: HabitatInventoryItem[], input: InventoryMutationInput): HabitatInventoryItem {

@@ -1,6 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { withDatabase } from "./sqlite-state.js";
 import { subtractInventoryInputs, validateInventoryRequirements } from "./inventory-state.js";
 import type {
   ConstructionCheckResult,
@@ -11,11 +9,6 @@ import type {
   HabitatModule,
   ConstructionValidationResult,
 } from "./types.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const defaultDataDirectory = path.resolve(__dirname, "../data");
-const constructionStateFileName = "construction.json";
 
 type StartConstructionInput = {
   blueprint: HabitatBlueprint;
@@ -35,28 +28,36 @@ type CancelConstructionResult = {
 };
 
 export function loadConstructionState(): HabitatConstructionState {
-  ensureConstructionStateFile();
+  const activeJob = withDatabase((db) => {
+    const row = db
+      .query(`SELECT active_job_json AS activeJobJson FROM construction_state WHERE id = 1 LIMIT 1`)
+      .get() as { activeJobJson: string } | undefined;
 
-  try {
-    const raw = JSON.parse(readFileSync(getConstructionStateFilePath(), "utf8")) as { activeJob?: unknown };
+    if (!row) {
+      return null;
+    }
 
-    return {
-      activeJob: normalizeConstructionJob(raw.activeJob),
-    };
-  } catch {
-    return { activeJob: null };
+    return normalizeConstructionJob(JSON.parse(row.activeJobJson));
+  });
+
+  if (activeJob) {
+    return { activeJob };
   }
+
+  return { activeJob: null };
 }
 
 export function saveConstructionState(state: HabitatConstructionState): void {
-  ensureConstructionStateFile();
-  const filePath = getConstructionStateFilePath();
-  const temporaryFilePath = `${filePath}.${process.pid}.tmp`;
   const normalizedState: HabitatConstructionState = {
     activeJob: normalizeConstructionJob(state.activeJob),
   };
-  writeFileSync(temporaryFilePath, `${JSON.stringify(normalizedState, null, 2)}\n`, "utf8");
-  renameSync(temporaryFilePath, filePath);
+
+  withDatabase((db) => {
+    db.run("DELETE FROM construction_state;");
+    db.query(`INSERT INTO construction_state (id, active_job_json) VALUES (1, ?)`).run(
+      JSON.stringify(normalizedState.activeJob),
+    );
+  });
 }
 
 export function buildConstructionReadinessReport(input: {
@@ -329,26 +330,6 @@ function normalizeConstructionJob(rawJob: unknown): HabitatConstructionJob | nul
     runtimeAttributes: isRecord(input.runtimeAttributes) ? input.runtimeAttributes : {},
     capabilities: Array.isArray(input.capabilities) ? input.capabilities.filter((value): value is string => typeof value === "string") : [],
   };
-}
-
-function ensureConstructionStateFile(): void {
-  mkdirSync(getDataDirectory(), { recursive: true });
-
-  try {
-    readFileSync(getConstructionStateFilePath(), "utf8");
-  } catch {
-    writeFileSync(getConstructionStateFilePath(), '{\n  "activeJob": null\n}\n', "utf8");
-  }
-}
-
-function getDataDirectory(): string {
-  return process.env.HABITAT_DATA_DIRECTORY
-    ? path.resolve(process.env.HABITAT_DATA_DIRECTORY)
-    : defaultDataDirectory;
-}
-
-function getConstructionStateFilePath(): string {
-  return path.join(getDataDirectory(), constructionStateFileName);
 }
 
 function stripBlueprintSuffix(displayName: string): string {

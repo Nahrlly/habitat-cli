@@ -1,4 +1,4 @@
-import type { KeplerCatalogBlueprint, KeplerCatalogResource } from "./kepler-catalog.js";
+import type { KeplerCatalogBlueprint, KeplerCatalogResource, KeplerSolarIrradiance } from "./kepler-catalog.js";
 import type {
   ConstructionReadinessReport,
   ConstructionShortage,
@@ -65,6 +65,10 @@ export function getDeclaredModuleStatus(module: HabitatModule): string {
 }
 
 export function getEffectiveModuleStatus(module: HabitatModule): string {
+  if (getDeclaredModuleStatus(module) === "offline") {
+    return "offline";
+  }
+
   if (isModuleBusy(module)) {
     return "active";
   }
@@ -93,8 +97,13 @@ export function getModulePowerDraw(module: HabitatModule): number {
 
 export function getBatteryCharge(module: HabitatModule): number {
   const currentEnergyKwh = module.runtimeAttributes.currentEnergyKwh;
+  const energyKwh = module.runtimeAttributes.energyKwh;
 
-  return typeof currentEnergyKwh === "number" ? currentEnergyKwh : 0;
+  if (typeof currentEnergyKwh === "number") {
+    return currentEnergyKwh;
+  }
+
+  return typeof energyKwh === "number" ? energyKwh : 0;
 }
 
 export function getTotalBatteryCharge(registration: KeplerRegistration): number {
@@ -109,39 +118,60 @@ export function powerDrawToEnergyCost(powerDrawKw: number, ticks: number): numbe
   return (powerDrawKw * ticks) / 3600;
 }
 
+export function sumSolarGeneration(registration: KeplerRegistration): number {
+  return getSolarGenerationModules(registration).reduce((total, module) => total + getModuleSolarGeneration(module), 0);
+}
+
 export function applyTick(registration: KeplerRegistration, ticks: number): {
   registration: KeplerRegistration;
   totalPowerDraw: number;
+  totalSolarGeneration: number;
   batteryBefore: number;
   batteryAfter: number;
 } {
-  const totalPowerDraw = powerDrawToEnergyCost(sumModulePowerDraw(registration), ticks);
-  const batteryBefore = getTotalBatteryCharge(registration);
-  const batteryAfter = Math.max(0, batteryBefore - totalPowerDraw);
-  const batteryDrain = batteryBefore - batteryAfter;
-  const batteryModules = getBatteryModules(registration);
-  const updatedBatteryModules: HabitatModule[] = [];
-  let remainingDrain = batteryDrain;
+  return applyTickWithSolarIrradiance(registration, ticks, { wPerM2: 0 });
+}
 
-  for (const module of batteryModules) {
-    const currentCharge = getBatteryCharge(module);
-    const nextCharge = Math.max(0, currentCharge - remainingDrain);
-    remainingDrain -= currentCharge - nextCharge;
-    updatedBatteryModules.push(setBatteryCharge(module, nextCharge));
-  }
+export function applyTickWithSolarIrradiance(
+  registration: KeplerRegistration,
+  ticks: number,
+  solarIrradiance: KeplerSolarIrradiance,
+): {
+  registration: KeplerRegistration;
+  totalPowerDraw: number;
+  totalSolarGeneration: number;
+  batteryBefore: number;
+  batteryAfter: number;
+  solarChargeReason: string | null;
+} {
+  const totalPowerDraw = powerDrawToEnergyCost(sumModulePowerDraw(registration), ticks);
+  const solarMultiplier = solarIrradiance.wPerM2 / 900;
+  const solarEfficiency = 0.5;
+  const onlineSolarModules = getSolarGenerationModules(registration);
+  const onlineBatteryModules = getBatteryModules(registration);
+  const totalSolarGeneration = powerDrawToEnergyCost(sumSolarGeneration(registration) * solarMultiplier * solarEfficiency, ticks);
+  const batteryBefore = getTotalBatteryCharge(registration);
+  const netBatteryChange = totalSolarGeneration - totalPowerDraw;
+  const updatedBatteryModules = distributeBatteryCharge(onlineBatteryModules, netBatteryChange);
+  const batteryAfter = updatedBatteryModules.reduce((total, module) => total + getBatteryCharge(module), 0);
+  const solarChargeReason = buildSolarChargeReason(onlineSolarModules, onlineBatteryModules, solarIrradiance, totalSolarGeneration);
+
+  const nextRegistration = {
+    ...registration,
+    modules: registration.modules.map((module) => {
+      const updatedBatteryModule = updatedBatteryModules.find((candidate) => candidate.id === module.id);
+
+      return updatedBatteryModule ?? module;
+    }),
+  };
 
   return {
-    registration: {
-      ...registration,
-      modules: registration.modules.map((module) => {
-        const updatedBatteryModule = updatedBatteryModules.find((candidate) => candidate.id === module.id);
-
-        return updatedBatteryModule ?? module;
-      }),
-    },
+    registration: onlineBatteryModules.length > 0 && batteryAfter === 0 ? setAllModulesOffline(nextRegistration) : nextRegistration,
     totalPowerDraw,
+    totalSolarGeneration,
     batteryBefore,
     batteryAfter,
+    solarChargeReason,
   };
 }
 
@@ -223,6 +253,81 @@ export function formatResourceList(resources: KeplerCatalogResource[]): string {
   ]);
 
   return renderTextTable(["Name", "Category", "Unit"], rows);
+}
+
+export function formatSolarIrradiance(reading: Record<string, unknown>): string {
+  const rows = Object.entries(reading).map(([field, value]) => [field, formatValue(value)]);
+
+  if (rows.length === 0) {
+    return "Solar irradiance: no data returned.";
+  }
+
+  return ["Solar irradiance:", renderTextTable(["Field", "Value"], rows)].join("\n");
+}
+
+export function formatBatteryStatus(report: {
+  batteryBefore: number;
+  batteryAfter: number;
+  totalPowerDraw: number;
+  totalSolarGeneration: number;
+  solarChargeReason: string | null;
+}): string {
+  const lines = [
+    `Battery charge: ${formatEnergyCost(report.batteryBefore)} kWh -> ${formatEnergyCost(report.batteryAfter)} kWh.`,
+    `Total power draw: ${formatEnergyCost(report.totalPowerDraw)} kWh.`,
+    `Total solar generation: ${formatEnergyCost(report.totalSolarGeneration)} kWh.`,
+  ];
+
+  if (report.solarChargeReason) {
+    lines.push(report.solarChargeReason);
+  }
+
+  return lines.join("\n");
+}
+
+export function formatPowerOverview(
+  registration: KeplerRegistration,
+  solarIrradiance: KeplerSolarIrradiance,
+): string {
+  const solarMultiplier = solarIrradiance.wPerM2 / 900;
+  const solarEfficiency = 0.5;
+  const rows = registration.modules.map((module) => {
+    const effectiveStatus = getEffectiveModuleStatus(module);
+    const drawKw = getModulePowerDraw(module);
+    const solarKw =
+      isSolarGenerationModule(module) && isModuleOnlineOrActive(module)
+        ? getModuleSolarGeneration(module) * solarMultiplier * solarEfficiency
+        : 0;
+    const drawDisplay = drawKw > 0 ? `${formatPowerDraw(drawKw)} kW` : "";
+    const generationDisplay = solarKw > 0 ? `${formatPowerDraw(solarKw)} kW` : "";
+
+    return [
+      module.selector,
+      module.displayName,
+      effectiveStatus,
+      drawDisplay,
+      generationDisplay,
+    ];
+  });
+
+  const activeRows = rows.filter((row) => row[2] === "online" || row[2] === "active");
+  const sections = [
+    `Power overview at ${formatValue(solarIrradiance.wPerM2)} W/m2 solar irradiance`,
+    activeRows.length > 0
+      ? renderTextTable(["Module", "Name", "Status", "Power Draw", "Solar Generation"], activeRows)
+      : "No modules are currently drawing or providing power.",
+  ];
+
+  const batteryRows = registration.modules
+    .filter(isBatteryModule)
+    .map((module) => [module.selector, module.displayName, getEffectiveModuleStatus(module), `${formatEnergyCost(getBatteryCharge(module))} kWh`]);
+
+  if (batteryRows.length > 0) {
+    sections.push("");
+    sections.push(renderTextTable(["Battery", "Name", "Status", "Charge"], batteryRows));
+  }
+
+  return sections.join("\n");
 }
 
 export function formatInventoryList(state: HabitatInventoryState): string {
@@ -334,11 +439,106 @@ export function formatModuleSummary(registration: KeplerRegistration): string {
 }
 
 function getBatteryModules(registration: KeplerRegistration): HabitatModule[] {
-  return registration.modules.filter(isBatteryModule);
+  return registration.modules.filter((module) => isBatteryModule(module) && isModuleOnline(module));
+}
+
+
+function getSolarGenerationModules(registration: KeplerRegistration): HabitatModule[] {
+  return registration.modules.filter((module) => isSolarGenerationModule(module) && isModuleOnlineOrActive(module));
 }
 
 function isBatteryModule(module: HabitatModule): boolean {
   return module.capabilities.includes("power-storage");
+}
+
+function isSolarGenerationModule(module: HabitatModule): boolean {
+  return module.capabilities.includes("solar-generation");
+}
+
+function isModuleOnline(module: HabitatModule): boolean {
+  return getEffectiveModuleStatus(module) === "online";
+}
+
+function isModuleOnlineOrActive(module: HabitatModule): boolean {
+  const status = getEffectiveModuleStatus(module);
+  return status === "online" || status === "active";
+}
+
+function getModuleSolarGeneration(module: HabitatModule): number {
+  const powerGenerationKw = module.runtimeAttributes.powerGenerationKw;
+
+  return typeof powerGenerationKw === "number" ? powerGenerationKw : 0;
+}
+
+function distributeBatteryCharge(modules: HabitatModule[], netBatteryChange: number): HabitatModule[] {
+  if (netBatteryChange === 0 || modules.length === 0) {
+    return modules.map((module) => setBatteryCharge(module, getBatteryCharge(module)));
+  }
+
+  if (netBatteryChange < 0) {
+    let remainingDrain = Math.abs(netBatteryChange);
+
+    return modules.map((module) => {
+      const currentCharge = getBatteryCharge(module);
+      const nextCharge = Math.max(0, currentCharge - remainingDrain);
+      remainingDrain -= currentCharge - nextCharge;
+      return setBatteryCharge(module, nextCharge);
+    });
+  }
+
+  let remainingCharge = netBatteryChange;
+
+  return modules.map((module) => {
+    const currentCharge = getBatteryCharge(module);
+    const storageCapacity = getBatteryStorageCapacity(module);
+    const nextCharge = Math.min(storageCapacity, currentCharge + remainingCharge);
+    remainingCharge -= nextCharge - currentCharge;
+    return setBatteryCharge(module, nextCharge);
+  });
+}
+
+function setAllModulesOffline(registration: KeplerRegistration): KeplerRegistration {
+  return {
+    ...registration,
+    modules: registration.modules.map((module) => ({
+      ...module,
+      runtimeAttributes: {
+        ...module.runtimeAttributes,
+        status: "offline",
+      },
+    })),
+  };
+}
+
+function buildSolarChargeReason(
+  solarModules: HabitatModule[],
+  batteryModules: HabitatModule[],
+  solarIrradiance: KeplerSolarIrradiance,
+  totalSolarGeneration: number,
+): string | null {
+  if (totalSolarGeneration > 0) {
+    return null;
+  }
+
+  if (solarModules.length === 0) {
+    return "no solar charging happened because no solar generation modules were online or active";
+  }
+
+  if (solarIrradiance.wPerM2 <= 0) {
+    return "no solar charging happened because solar irradiance was 0 W/m2";
+  }
+
+  if (batteryModules.length === 0) {
+    return "no solar charging happened because no battery modules were online";
+  }
+
+  return "no solar charging happened because available solar output rounded to 0 kWh for this tick";
+}
+
+function getBatteryStorageCapacity(module: HabitatModule): number {
+  const energyStorageKwh = module.runtimeAttributes.energyStorageKwh;
+
+  return typeof energyStorageKwh === "number" ? energyStorageKwh : getBatteryCharge(module);
 }
 
 function setBatteryCharge(module: HabitatModule, currentEnergyKwh: number): HabitatModule {
@@ -347,6 +547,7 @@ function setBatteryCharge(module: HabitatModule, currentEnergyKwh: number): Habi
     runtimeAttributes: {
       ...module.runtimeAttributes,
       currentEnergyKwh,
+      energyKwh: currentEnergyKwh,
     },
   };
 }
@@ -406,6 +607,10 @@ function formatRuntimeAttributeRows(attributes: Record<string, unknown>): string
 }
 
 function describeModuleActivity(module: HabitatModule, activeConstructionJob: HabitatConstructionJob | null): string | null {
+  if (getEffectiveModuleStatus(module) === "offline") {
+    return null;
+  }
+
   if (
     activeConstructionJob &&
     (activeConstructionJob.fabricatorId === module.id || activeConstructionJob.fabricatorSelector === module.selector)
