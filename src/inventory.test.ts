@@ -4,30 +4,37 @@ import os from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
 import { createProgram } from "./commands.js";
+import { installBackendFetch, setKeplerFetch } from "./test-backend.js";
 import type { HabitatBlueprint, HabitatConstructionJob, HabitatInventoryItem, HabitatModule } from "./types.js";
 
 describe("inventory commands", () => {
   const originalCwd = process.cwd();
   const originalFetch = globalThis.fetch;
   let tempDir = "";
+  let restoreFetch = () => {};
 
   beforeEach(() => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), "habitat-inventory-"));
     process.env.HABITAT_DATA_DIRECTORY = path.join(tempDir, "data");
+    process.env.HABITAT_API_BASE_URL = "http://localhost:8787";
+    process.env.HABITAT_API_LOG = "false";
     process.chdir(tempDir);
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ wPerM2: 0 }), {
+    restoreFetch = installBackendFetch(async () =>
+      new Response(JSON.stringify({ irradianceKwPerSquareMeter: 0 }), {
         status: 200,
         headers: {
           "Content-Type": "application/json",
         },
-      })) as typeof fetch;
+      }));
   });
 
   afterEach(() => {
     process.exitCode = 0;
     delete process.env.HABITAT_DATA_DIRECTORY;
+    delete process.env.HABITAT_API_BASE_URL;
+    delete process.env.HABITAT_API_LOG;
     process.chdir(originalCwd);
+    restoreFetch();
     globalThis.fetch = originalFetch;
 
     if (tempDir) {
@@ -644,7 +651,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ wPerM2: 900 }), {
         status: 200,
         headers: {
@@ -687,7 +694,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ solarIrradiance: { wPerM2: 0, condition: "night" } }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -729,7 +736,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ wPerM2: 900 }), {
         status: 200,
         headers: {
@@ -771,7 +778,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ wPerM2: 900 }), {
         status: 200,
         headers: {
@@ -829,7 +836,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ solarIrradiance: { wPerM2: 0, condition: "night" } }), {
         status: 200,
         headers: {
@@ -842,7 +849,7 @@ describe("inventory commands", () => {
     expect(errors).toHaveLength(0);
     expect(readModules(tempDir).every((module) => module.runtimeAttributes.status === "offline")).toBe(true);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ solarIrradiance: { wPerM2: 900, condition: "clear" } }), {
         status: 200,
         headers: {
@@ -909,7 +916,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ solarIrradiance: { wPerM2: 0, condition: "night" } }), {
         status: 200,
         headers: {
@@ -954,7 +961,7 @@ describe("inventory commands", () => {
       }),
     ]);
 
-    globalThis.fetch = (async () =>
+    setKeplerFetch(async () =>
       new Response(JSON.stringify({ solarIrradiance: { wPerM2: 900, condition: "clear" } }), {
         status: 200,
         headers: {
@@ -1015,7 +1022,7 @@ describe("inventory commands", () => {
     ]);
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    setKeplerFetch(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
 
       if (url.endsWith("/habitats/habitat_test") && init?.method === "DELETE") {
@@ -1074,7 +1081,7 @@ describe("inventory commands", () => {
       }
 
       return new Response(null, { status: 404 });
-    }) as typeof fetch;
+    });
 
     try {
       const unregisterResult = await runCli(["unregister"]);
@@ -1090,7 +1097,7 @@ describe("inventory commands", () => {
       expect(readModules(tempDir)).toHaveLength(1);
       expect(readModules(tempDir)[0]?.runtimeAttributes.status).toBe("online");
     } finally {
-      globalThis.fetch = originalFetch;
+      setKeplerFetch(async () => new Response(JSON.stringify({}), { status: 200 }));
     }
   });
 

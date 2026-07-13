@@ -63,11 +63,14 @@ export type KeplerSolarIrradiance = {
 };
 
 export function createKeplerCatalogClient(baseUrl: string, planetToken: string): KeplerCatalogClient {
+  const normalizedBaseUrl = baseUrl.trim();
+  const normalizedPlanetToken = planetToken.trim();
+
   return {
     async listBlueprints() {
-      const response = await fetch(`${baseUrl}/catalog/blueprints`, {
+      const response = await fetch(`${normalizedBaseUrl}/catalog/blueprints`, {
         headers: {
-          Authorization: `Bearer ${planetToken}`,
+          Authorization: `Bearer ${normalizedPlanetToken}`,
         },
       });
 
@@ -79,9 +82,9 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
       return normalizeBlueprintList(payload);
     },
     async getBlueprint(blueprintId: string) {
-      const response = await fetch(`${baseUrl}/catalog/blueprints/${encodeURIComponent(blueprintId)}`, {
+      const response = await fetch(`${normalizedBaseUrl}/catalog/blueprints/${encodeURIComponent(blueprintId)}`, {
         headers: {
-          Authorization: `Bearer ${planetToken}`,
+          Authorization: `Bearer ${normalizedPlanetToken}`,
         },
       });
 
@@ -97,9 +100,9 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
       return normalizeBlueprintResponse(payload.blueprint ?? null);
     },
     async listResources() {
-      const response = await fetch(`${baseUrl}/catalog/resources`, {
+      const response = await fetch(`${normalizedBaseUrl}/catalog/resources`, {
         headers: {
-          Authorization: `Bearer ${planetToken}`,
+          Authorization: `Bearer ${normalizedPlanetToken}`,
         },
       });
 
@@ -111,7 +114,7 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
       return normalizeResourceList(payload);
     },
     async getSolarIrradiance() {
-      const response = await fetch(`${baseUrl}/world/solar-irradiance`);
+      const response = await fetch(`${normalizedBaseUrl}/world/solar-irradiance`);
 
       if (!response.ok) {
         throw new Error(`Kepler solar irradiance request failed with ${response.status} ${response.statusText}`);

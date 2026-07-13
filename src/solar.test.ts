@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createProgram } from "./commands.js";
+import { installBackendFetch, setKeplerFetch } from "./test-backend.js";
 
 describe("solar commands", () => {
   const originalCwd = process.cwd();
@@ -8,6 +9,9 @@ describe("solar commands", () => {
 
   beforeEach(() => {
     process.env.KEPLER_BASE_URL = "https://planet.turingguild.com";
+    process.env.HABITAT_API_BASE_URL = "http://localhost:8787";
+    process.env.HABITAT_API_LOG = "false";
+    installBackendFetch(async () => new Response(JSON.stringify({}), { status: 200 }));
   });
 
   afterEach(() => {
@@ -18,6 +22,8 @@ describe("solar commands", () => {
     } else {
       process.env.KEPLER_BASE_URL = originalBaseUrl;
     }
+    delete process.env.HABITAT_API_BASE_URL;
+    delete process.env.HABITAT_API_LOG;
 
     globalThis.fetch = originalFetch;
     process.chdir(originalCwd);
@@ -30,7 +36,7 @@ describe("solar commands", () => {
     const originalLog = console.log;
     const originalError = console.error;
 
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    setKeplerFetch(async (input: RequestInfo | URL) => {
       fetchCalls.push(String(input));
       return new Response(
         JSON.stringify({
