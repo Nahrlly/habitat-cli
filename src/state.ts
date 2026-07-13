@@ -209,6 +209,16 @@ export function ensureDefaultModuleRuntimeStatus(module: HabitatModule): Habitat
     return module;
   }
 
+  if (isStarterBatteryModule(module)) {
+    return {
+      ...module,
+      runtimeAttributes: {
+        ...module.runtimeAttributes,
+        status: "online",
+      },
+    };
+  }
+
   const status = module.runtimeAttributes.status;
 
   if (
@@ -245,6 +255,10 @@ function normalizeModule(rawModule: unknown): HabitatModule {
     runtimeAttributes: isObject(input.runtimeAttributes) ? input.runtimeAttributes : {},
     capabilities: Array.isArray(input.capabilities) ? input.capabilities.filter(isString) : [],
   });
+}
+
+function isStarterBatteryModule(module: HabitatModule): boolean {
+  return module.blueprintId === "basic-battery" || module.displayName.toLowerCase().includes("battery");
 }
 
 function normalizeBlueprint(rawBlueprint: unknown): HabitatBlueprint {

@@ -57,15 +57,21 @@ export type KeplerCatalogClient = {
   getSolarIrradiance: () => Promise<KeplerSolarIrradiance>;
 };
 
+export type KeplerCatalogFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 export type KeplerSolarIrradiance = {
   wPerM2: number;
   [key: string]: unknown;
 };
 
-export function createKeplerCatalogClient(baseUrl: string, planetToken: string): KeplerCatalogClient {
+export function createKeplerCatalogClient(
+  baseUrl: string,
+  planetToken: string,
+  fetchImpl: KeplerCatalogFetch = fetch,
+): KeplerCatalogClient {
   return {
     async listBlueprints() {
-      const response = await fetch(`${baseUrl}/catalog/blueprints`, {
+      const response = await fetchImpl(`${baseUrl}/catalog/blueprints`, {
         headers: {
           Authorization: `Bearer ${planetToken}`,
         },
@@ -79,7 +85,7 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
       return normalizeBlueprintList(payload);
     },
     async getBlueprint(blueprintId: string) {
-      const response = await fetch(`${baseUrl}/catalog/blueprints/${encodeURIComponent(blueprintId)}`, {
+      const response = await fetchImpl(`${baseUrl}/catalog/blueprints/${encodeURIComponent(blueprintId)}`, {
         headers: {
           Authorization: `Bearer ${planetToken}`,
         },
@@ -97,7 +103,7 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
       return normalizeBlueprintResponse(payload.blueprint ?? null);
     },
     async listResources() {
-      const response = await fetch(`${baseUrl}/catalog/resources`, {
+      const response = await fetchImpl(`${baseUrl}/catalog/resources`, {
         headers: {
           Authorization: `Bearer ${planetToken}`,
         },
@@ -111,7 +117,7 @@ export function createKeplerCatalogClient(baseUrl: string, planetToken: string):
       return normalizeResourceList(payload);
     },
     async getSolarIrradiance() {
-      const response = await fetch(`${baseUrl}/world/solar-irradiance`);
+      const response = await fetchImpl(`${baseUrl}/world/solar-irradiance`);
 
       if (!response.ok) {
         throw new Error(`Kepler solar irradiance request failed with ${response.status} ${response.statusText}`);
