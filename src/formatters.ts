@@ -264,26 +264,23 @@ export function formatResourceScan(scan: Record<string, unknown>): string {
   if (tiles.length === 1) {
     const tile = tiles[0]!;
     const probabilities = Array.isArray(tile.probabilities) ? tile.probabilities.filter(isRecord) : [];
-    const estimate = isRecord(tile.quantityEstimate) ? tile.quantityEstimate : null;
+    const topCandidate = isRecord(tile.topCandidate) ? tile.topCandidate : null;
+    const estimate = topCandidate?.resourceType && isRecord(tile.quantityEstimate) ? tile.quantityEstimate : null;
     const lines = [
       header,
       `Tile ${tile.x},${tile.y} (${String(tile.terrain ?? "unknown")}), distance ${String(tile.distanceTiles ?? "unknown")}`,
       "Resource probabilities:",
       renderTextTable(["Resource", "Probability"], probabilities.map((probability) => [formatResourceType(probability.resourceType), `${String(probability.probabilityPct ?? 0)}%`])),
-      `Top candidate: ${formatTopCandidate(tile.topCandidate)}`,
+      `Top candidate: ${formatTopCandidate(topCandidate)}`,
       `Quantity estimate: ${formatQuantityEstimate(estimate)}`,
     ];
     return lines.join("\n");
   }
   return [header, renderTextTable(["Coordinates", "Distance", "Terrain", "Top candidate", "Confidence", "Estimated quantity"], tiles.map((tile) => {
     const top = isRecord(tile.topCandidate) ? tile.topCandidate : {};
-    const estimate = isRecord(tile.quantityEstimate) ? tile.quantityEstimate : null;
+    const estimate = top.resourceType && isRecord(tile.quantityEstimate) ? tile.quantityEstimate : null;
     return [`${String(tile.x)},${String(tile.y)}`, String(tile.distanceTiles ?? ""), String(tile.terrain ?? ""), formatResourceType(top.resourceType), `${String(top.probabilityPct ?? 0)}%`, estimate ? `${String(estimate.estimatedKg ?? "?")} kg (${String(estimate.minimumKg ?? "?")}-${String(estimate.maximumKg ?? "?")})` : ""];
   }))].join("\n");
-}
-
-function formatProbability(value: unknown): string {
-  return typeof value === "number" ? `${Math.round(value * 100)}%` : String(value ?? "");
 }
 
 function formatTopCandidate(value: unknown): string {

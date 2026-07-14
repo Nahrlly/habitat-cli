@@ -3,6 +3,8 @@ Description=Habitat API
 
 [Service]
 Type=simple
+Environment=HABITAT_API_HOST=0.0.0.0
+Environment=HABITAT_API_PORT=8787
 WorkingDirectory=%h/habitat-cli
 ExecStart=/usr/local/bin/bun run server
 Restart=always

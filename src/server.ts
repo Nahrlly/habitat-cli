@@ -14,7 +14,7 @@ app.use("*", async (c, next) => {
   const startedAt = Date.now();
   await next();
   const routeSummary = summarizeRoute(c.req.method, c.req.path, c.res.status);
-  console.log(`[api] ${c.req.method} ${c.req.path} -> ${c.res.status} ${routeSummary}`);
+  console.log(`[habitat] ${c.req.method} ${c.req.path} -> ${c.res.status} ${routeSummary}`);
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs > 0) {
     void elapsedMs;
@@ -329,10 +329,19 @@ app.get("/world/scan", async (c) => {
     }
 
     const query = c.req.query();
-    const x = parseIntegerQuery(query.x, "x");
-    const y = parseIntegerQuery(query.y, "y");
-    const sensorStrength = parseIntegerQuery(query.strength ?? query.sensorStrength, "sensor strength");
-    const radiusTiles = parseIntegerQuery(query.radius ?? query.radiusTiles ?? "0", "radius");
+    let x: number;
+    let y: number;
+    let sensorStrength: number;
+    let radiusTiles: number;
+
+    try {
+      x = parseIntegerQuery(query.x, "x");
+      y = parseIntegerQuery(query.y, "y");
+      sensorStrength = parseIntegerQuery(query.strength ?? query.sensorStrength, "sensor strength");
+      radiusTiles = parseIntegerQuery(query.radius ?? query.radiusTiles ?? "0", "radius");
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Invalid scan parameters." }, 400);
+    }
 
     if (sensorStrength < 0 || sensorStrength > 100) {
       return c.json({ error: "sensor strength must be an integer from 0 through 100." }, 400);

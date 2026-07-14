@@ -8,7 +8,7 @@ describe("resource scan formatting", () => {
       scan: { origin: { x: 3, y: -2 }, sensorStrength: 60, tiles: [{
         x: 3,
         y: -2,
-        terrain: "rocky",
+        terrain: "flat",
         distanceTiles: 0,
         probabilities: [{ resourceType: "iron", probabilityPct: 80 }, { resourceType: null, probabilityPct: 20 }],
         topCandidate: { resourceType: "iron", probabilityPct: 80 },
