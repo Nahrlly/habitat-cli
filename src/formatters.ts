@@ -255,6 +255,38 @@ export function formatResourceList(resources: KeplerCatalogResource[]): string {
   return renderTextTable(["Name", "Category", "Unit"], rows);
 }
 
+export function formatResourceScan(scan: Record<string, unknown>): string {
+  const tiles = Array.isArray(scan.tiles) ? scan.tiles.filter(isRecord) : [];
+  if (tiles.length === 0) return "No scan tiles returned.";
+  if (tiles.length === 1) {
+    const tile = tiles[0]!;
+    const probabilities = isRecord(tile.resourceProbabilities) ? tile.resourceProbabilities : {};
+    const estimate = isRecord(tile.quantityEstimate) ? tile.quantityEstimate : null;
+    const lines = [
+      `Tile ${tile.x},${tile.y} (${String(tile.terrain ?? "unknown")}), distance ${String(tile.distance ?? "unknown")}`,
+      "Resource probabilities:",
+      renderTextTable(["Resource", "Probability"], Object.entries(probabilities).map(([resource, probability]) => [resource, formatProbability(probability)])),
+      `Top candidate: ${formatTopCandidate(tile.topCandidate)}`,
+      `Quantity estimate: ${estimate ? `${String(estimate.candidateResource ?? "unknown")}, ${String(estimate.kilograms ?? "unknown")} kg, value ${String(estimate.estimatedValue ?? "unknown")} (${String(estimate.minimumValue ?? "unknown")} - ${String(estimate.maximumValue ?? "unknown")}), exact ${String(estimate.exact ?? false)}` : "none"}`,
+    ];
+    return lines.join("\n");
+  }
+  return renderTextTable(["Coordinates", "Distance", "Terrain", "Top candidate", "Confidence", "Estimated quantity"], tiles.map((tile) => {
+    const top = isRecord(tile.topCandidate) ? tile.topCandidate : {};
+    const estimate = isRecord(tile.quantityEstimate) ? tile.quantityEstimate : null;
+    return [`${String(tile.x)},${String(tile.y)}`, String(tile.distance ?? ""), String(tile.terrain ?? ""), String(top.resource ?? top.candidateResource ?? "none"), formatProbability(top.probability ?? top.confidence), estimate ? `${String(estimate.kilograms ?? "?")} kg` : "none"];
+  }));
+}
+
+function formatProbability(value: unknown): string {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : String(value ?? "");
+}
+
+function formatTopCandidate(value: unknown): string {
+  if (!isRecord(value)) return "none";
+  return `${String(value.resource ?? value.candidateResource ?? "unknown")} (${formatProbability(value.probability ?? value.confidence)})`;
+}
+
 export function formatSolarIrradiance(reading: Record<string, unknown>): string {
   const rows = Object.entries(reading).map(([field, value]) => [field, formatValue(value)]);
 

@@ -27,6 +27,7 @@ import {
   formatPowerDraw,
   formatPowerOverview,
   formatResourceList,
+  formatResourceScan,
   formatSolarIrradiance,
   getDeclaredModuleStatus,
   getModulePowerDraw,
@@ -217,6 +218,25 @@ export function createProgram(): Command {
       try {
         const resources = (await apiClient.getJson<{ resources: KeplerCatalogResource[] }>("/catalog/resources")).resources;
         console.log(formatResourceList(resources));
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("scan")
+    .description("Scan for hidden resources at world coordinates.")
+    .requiredOption("--x <integer>", "current x coordinate", parseIntegerOption("x"))
+    .requiredOption("--y <integer>", "current y coordinate", parseIntegerOption("y"))
+    .requiredOption("--strength <0-100>", "effective sensor strength", parseBoundedIntegerOption("strength", 0, 100))
+    .option("--radius <0-5>", "scan radius, default 0", parseBoundedIntegerOption("radius", 0, 5), 0)
+    .option("--json", "print the complete JSON response")
+    .action(async (options: { x: number; y: number; strength: number; radius: number; json?: boolean }) => {
+      try {
+        const path = `/world/scan?x=${options.x}&y=${options.y}&strength=${options.strength}&radius=${options.radius}`;
+        const response = await apiClient.getJson<Record<string, unknown>>(path);
+        console.log(options.json ? JSON.stringify(response, null, 2) : formatResourceScan(response));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -684,6 +704,25 @@ function parsePositiveNumber(value: string, fieldName: string): number {
   }
 
   return parsed;
+}
+
+function parseIntegerOption(fieldName: string) {
+  return (value: string): number => {
+    if (!/^-?\d+$/.test(value)) {
+      throw new InvalidArgumentError(`${fieldName} must be an integer.`);
+    }
+    return Number(value);
+  };
+}
+
+function parseBoundedIntegerOption(fieldName: string, minimum: number, maximum: number) {
+  return (value: string): number => {
+    const parsed = parseIntegerOption(fieldName)(value);
+    if (parsed < minimum || parsed > maximum) {
+      throw new InvalidArgumentError(`${fieldName} must be an integer from ${minimum} through ${maximum}.`);
+    }
+    return parsed;
+  };
 }
 
 function parseModuleStatus(value: string): "offline" | "idle" | "online" | "active" | "damaged" {

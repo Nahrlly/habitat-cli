@@ -4,6 +4,7 @@ import type { HabitatModule, KeplerBlueprint, KeplerRegistration, KeplerStarterM
 import { loadKeplerRegistration } from "./state.js";
 import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, saveState } from "./state.js";
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
+import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
 import { loadConstructionState, saveConstructionState } from "./construction-state.js";
 
@@ -320,6 +321,39 @@ app.get("/solar/status", async (c) => {
   }
 });
 
+app.get("/world/scan", async (c) => {
+  try {
+    const registration = loadKeplerRegistration();
+    if (!registration) {
+      return c.json({ error: "Habitat is not registered." }, 404);
+    }
+
+    const query = c.req.query();
+    const x = parseIntegerQuery(query.x, "x");
+    const y = parseIntegerQuery(query.y, "y");
+    const sensorStrength = parseIntegerQuery(query.strength ?? query.sensorStrength, "sensor strength");
+    const radiusTiles = parseIntegerQuery(query.radius ?? query.radiusTiles ?? "0", "radius");
+
+    if (sensorStrength < 0 || sensorStrength > 100) {
+      return c.json({ error: "sensor strength must be an integer from 0 through 100." }, 400);
+    }
+    if (radiusTiles < 0 || radiusTiles > 5) {
+      return c.json({ error: "radius must be an integer from 0 through 5." }, 400);
+    }
+
+    const scan = await createWorldClient().scan({
+      habitatId: registration.habitatId,
+      x,
+      y,
+      sensorStrength,
+      radiusTiles,
+    });
+    return c.json(scan);
+  } catch (error) {
+    return friendlyError(c, error);
+  }
+});
+
 app.get("/", (c) => {
   return c.json({
     service: "habitat-backend",
@@ -331,6 +365,7 @@ app.get("/", (c) => {
       "GET /catalog/blueprints",
       "GET /catalog/resources",
       "GET /solar/status",
+      "GET /world/scan",
     ],
   });
 });
@@ -452,6 +487,13 @@ function createCatalogClient() {
   return createKeplerCatalogClient(keplerBaseUrl, keplerPlanetToken, loggedKeplerFetch);
 }
 
+function createWorldClient() {
+  const keplerBaseUrl = process.env.KEPLER_BASE_URL ?? "";
+  const keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
+  ensureKeplerEnv(keplerBaseUrl, keplerPlanetToken);
+  return createKeplerWorldClient(keplerBaseUrl, keplerPlanetToken, loggedKeplerFetch);
+}
+
 function ensureStarterModuleRuntimeStatus(module: HabitatModule): HabitatModule {
   if (module.blueprintId === "basic-battery" || module.displayName.toLowerCase().includes("battery")) {
     return {
@@ -555,7 +597,18 @@ function summarizeRoute(method: string, path: string, status: number): string {
     return "returned solar status";
   }
 
+  if (path === "/world/scan" && method === "GET") {
+    return "returned world scan";
+  }
+
   return "completed";
+}
+
+function parseIntegerQuery(value: string | undefined, fieldName: string): number {
+  if (value === undefined || !/^-?\d+$/.test(value)) {
+    throw new Error(`${fieldName} must be an integer.`);
+  }
+  return Number(value);
 }
 
 function friendlyError(c: { json: (value: unknown, status?: number) => Response }, error: unknown): Response {
