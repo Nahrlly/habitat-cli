@@ -5,52 +5,52 @@ import { createKeplerWorldClient } from "./kepler-world.js";
 describe("resource scan formatting", () => {
   test("prints the full probability table and quantity estimate for one tile", () => {
     const output = formatResourceScan({
-      tiles: [{
+      scan: { origin: { x: 3, y: -2 }, sensorStrength: 60, tiles: [{
         x: 3,
         y: -2,
         terrain: "rocky",
-        distance: 0,
-        resourceProbabilities: { iron: 0.8, water: 0.2 },
-        topCandidate: { resource: "iron", probability: 0.8 },
+        distanceTiles: 0,
+        probabilities: [{ resourceType: "iron", probabilityPct: 80 }, { resourceType: null, probabilityPct: 20 }],
+        topCandidate: { resourceType: "iron", probabilityPct: 80 },
         quantityEstimate: {
-          candidateResource: "iron",
-          kilograms: 120,
-          estimatedValue: 600,
-          minimumValue: 400,
-          maximumValue: 800,
+          resourceType: "iron",
+          estimatedKg: 120,
+          minimumKg: 400,
+          maximumKg: 800,
           exact: false,
         },
-      }],
+      }] },
     });
 
     expect(output).toContain("iron");
     expect(output).toContain("80%");
     expect(output).toContain("120 kg");
-    expect(output).toContain("400 - 800");
+    expect(output).toContain("400-800 kg");
   });
 
   test("prints one summary row per tile for a larger radius", () => {
     const output = formatResourceScan({
-      tiles: [
+      scan: { origin: { x: 3, y: -2 }, sensorStrength: 60, tiles: [
         {
-          x: 3, y: -2, terrain: "rocky", distance: 0,
-          resourceProbabilities: { iron: 0.8 },
-          topCandidate: { resource: "iron", probability: 0.8 },
-          quantityEstimate: { candidateResource: "iron", kilograms: 120, estimatedValue: 600, minimumValue: 400, maximumValue: 800, exact: false },
+          x: 3, y: -2, terrain: "flat", distanceTiles: 0,
+          probabilities: [{ resourceType: "iron", probabilityPct: 80 }, { resourceType: null, probabilityPct: 20 }],
+          topCandidate: { resourceType: "iron", probabilityPct: 80 },
+          quantityEstimate: { resourceType: "iron", estimatedKg: 120, minimumKg: 400, maximumKg: 800, exact: false },
         },
         {
-          x: 4, y: -2, terrain: "dust", distance: 1,
-          resourceProbabilities: { water: 0.6 },
-          topCandidate: { resource: "water", probability: 0.6 },
+          x: 4, y: -2, terrain: "flat", distanceTiles: 1,
+          probabilities: [{ resourceType: null, probabilityPct: 100 }],
+          topCandidate: { resourceType: null, probabilityPct: 100 },
           quantityEstimate: null,
         },
-      ],
+      ] },
     });
 
     expect(output).toContain("Coordinates");
     expect(output).toContain("3,-2");
     expect(output).toContain("4,-2");
-    expect(output).not.toContain("resourceProbabilities");
+    expect(output).toContain("Sensor strength: 60");
+    expect(output).toContain("none");
   });
 
   test("passes the saved habitat id and scan parameters to Kepler", async () => {
