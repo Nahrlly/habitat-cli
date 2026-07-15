@@ -44,12 +44,12 @@ For an account without `sudo`, use the user-level unit. This assumes the checkou
 cd /home/emi/habitat-cli
 cp deploy/habitat-api.user.env.example /tmp/habitat-api.user.env.example
 sed -i "s|%h|$HOME|g" /tmp/habitat-api.user.env.example
-mkdir -p "$HOME/.config/habitat"
-cp /tmp/habitat-api.user.env.example "$HOME/.config/habitat/habitat-api.env"
-chmod 600 "$HOME/.config/habitat/habitat-api.env"
+mkdir -p "$HOME/.local/share/habitat"
+sed "s|%h|$HOME|g" /tmp/habitat-api.user.env.example > "$HOME/.local/share/habitat/habitat-api.env"
+chmod 600 "$HOME/.local/share/habitat/habitat-api.env"
 ```
 
-If `/home/emi/habitat-cli/.env` already exists, `deploy/install-user-service.sh` copies it into the user-service environment automatically. Otherwise, edit `~/.config/habitat/habitat-api.env` and add the Kepler token before starting the service:
+If `/home/emi/habitat-cli/.env` already exists, `deploy/install-user-service.sh` copies it into the user-service environment automatically. Otherwise, edit `~/.local/share/habitat/habitat-api.env` and add the Kepler token before starting the service:
 
 ```bash
 bash deploy/install-user-service.sh
@@ -65,6 +65,6 @@ cd /home/emi/habitat-cli
 bash deploy/deploy-habitat.sh
 ```
 
-The user service intentionally binds to `127.0.0.1`. To make it reachable through a reverse proxy, keep the proxy on the same server and forward to `http://127.0.0.1:8787`; do not change the browser URL to `0.0.0.0`.
+The user service intentionally binds to `127.0.0.1`. To make it reachable through a reverse proxy, keep the proxy on the same server and forward to `http://127.0.0.1:8787`; do not change the browser URL to `0.0.0.0`. The unit and its environment live under `~/.local/share` because this account's `~/.config` directory is administrator-owned.
 
 For remote access, place a TLS-capable reverse proxy or VPN boundary in front of Hono. Proxy `/` and the API paths to the same upstream origin, expose only the intended hostname, and keep `/etc/habitat/habitat-api.env`, `/var/lib/habitat`, source files, and the Vite development server off the network.

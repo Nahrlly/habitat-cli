@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/habitat-cli}"
-CONFIG_DIR="$HOME/.config/habitat"
-SYSTEMD_DIR="$HOME/.config/systemd/user"
+CONFIG_DIR="$HOME/.local/share/habitat"
+SYSTEMD_DIR="$HOME/.local/share/systemd/user"
 DATA_DIR="$HOME/.local/share/habitat"
 
 mkdir -p "$CONFIG_DIR" "$SYSTEMD_DIR" "$DATA_DIR"

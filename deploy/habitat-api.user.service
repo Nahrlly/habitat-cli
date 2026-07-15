@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/habitat-cli
-EnvironmentFile=%h/.config/habitat/habitat-api.env
+EnvironmentFile=%h/.local/share/habitat/habitat-api.env
 ExecStart=%h/.bun/bin/bun %h/habitat-cli/src/server.ts
 Restart=on-failure
 RestartSec=5s
