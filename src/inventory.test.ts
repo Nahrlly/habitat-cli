@@ -240,7 +240,7 @@ describe("inventory commands", () => {
     expect(readModules(tempDir)[2]).toMatchObject({
       blueprintId: "command-module",
       displayName: "Command Module",
-      selector: "command-module-1-2",
+      selector: "command-module-2",
     });
   });
 

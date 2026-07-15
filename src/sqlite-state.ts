@@ -41,6 +41,8 @@ export function ensureDataDirectory(): void {
 function openDatabase(): Database {
   const dbPath = getDatabaseFilePath();
   const db = new Database(dbPath);
+  db.run("PRAGMA busy_timeout = 5000;");
+  db.run("PRAGMA journal_mode = WAL;");
   db.run("PRAGMA foreign_keys = ON;");
   initializeSchema(db);
 
@@ -53,8 +55,38 @@ function initializeSchema(db: Database): void {
       habitat_id TEXT PRIMARY KEY,
       habitat_uuid TEXT NOT NULL,
       display_name TEXT NOT NULL,
+      stream_url TEXT NOT NULL,
+      api_token TEXT NOT NULL,
+      stream_json TEXT NOT NULL,
+      contracts_json TEXT NOT NULL,
       habitat_json TEXT NOT NULL,
       blueprints_json TEXT NOT NULL
+    );
+  `);
+  ensureColumn(db, "kepler_registration", "stream_url", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "kepler_registration", "api_token", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "kepler_registration", "stream_json", "TEXT NOT NULL DEFAULT '{}' ");
+  ensureColumn(db, "kepler_registration", "contracts_json", "TEXT NOT NULL DEFAULT '{}' ");
+  db.run(`
+    CREATE TABLE IF NOT EXISTS habitat_humans (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      location_module_id TEXT NOT NULL,
+      status TEXT NOT NULL
+    );
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS habitat_alerts (
+      id TEXT PRIMARY KEY,
+      schema_version TEXT NOT NULL,
+      type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      details_json TEXT NOT NULL
     );
   `);
   db.run(`
@@ -85,4 +117,32 @@ function initializeSchema(db: Database): void {
       active_job_json TEXT NOT NULL
     );
   `);
+  db.run(`CREATE TABLE IF NOT EXISTS eva_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    deployed_human_id TEXT,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    carried_resources_json TEXT NOT NULL,
+    max_carrying_capacity_kg REAL NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS power_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at TEXT NOT NULL,
+    generation_kw REAL NOT NULL,
+    consumption_kw REAL NOT NULL,
+    net_kw REAL NOT NULL,
+    modules_json TEXT NOT NULL
+  );`);
+}
+
+function ensureColumn(db: Database, tableName: string, columnName: string, definition: string): void {
+  const columns = db
+    .query(`PRAGMA table_info(${tableName})`)
+    .all() as Array<{ name: string }>;
+
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
 }

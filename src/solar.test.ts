@@ -34,9 +34,11 @@ describe("solar commands", () => {
       fetchCalls.push(String(input));
       return new Response(
         JSON.stringify({
-          irradianceKwPerSquareMeter: 1.25,
-          measuredAt: "2026-07-09T12:34:56Z",
-          source: "planet-sensor",
+          solarIrradiance: {
+            irradianceKwPerSquareMeter: 1.25,
+            measuredAt: "2026-07-09T12:34:56Z",
+            source: "planet-sensor",
+          },
         }),
         {
           status: 200,
@@ -62,7 +64,7 @@ describe("solar commands", () => {
     }
 
     expect(errors).toHaveLength(0);
-    expect(fetchCalls).toEqual(["https://planet.turingguild.com/world/solar-irradiance"]);
+    expect(fetchCalls[0]).toMatch(/\/solar\/status$/);
     expect(output.join("\n")).toContain("Solar irradiance:");
     expect(output.join("\n")).toContain("irradianceKwPerSquareMeter");
     expect(output.join("\n")).toContain("1.25");

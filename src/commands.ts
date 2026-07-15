@@ -3,13 +3,17 @@ import { Command, InvalidArgumentError } from "commander";
 import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { type KeplerCatalogBlueprint, type KeplerCatalogResource } from "./kepler-catalog.js";
 import { addInventoryQuantity, loadInventoryState, setInventoryQuantity } from "./inventory-state.js";
+import { assertModuleCanBeDeleted, listHumans } from "./human-domain.js";
 import { createApiClient, ApiError } from "./api-client.js";
 import {
   ensureKeplerEnv,
   ensureDefaultModuleRuntimeStatus,
+  clearLocalHabitatState,
   loadStateOrFail,
   saveState,
+  setModuleStatus,
 } from "./state.js";
+import { clearPowerHistory } from "./power-history.js";
 import {
   applyTick,
   applyTickWithSolarIrradiance,
@@ -22,6 +26,7 @@ import {
   formatBlueprintSummary,
   formatEnergyCost,
   formatInventoryList,
+  formatHumanList,
   formatModuleDetails,
   formatModuleSummary,
   formatPowerDraw,
@@ -35,7 +40,14 @@ import {
   renderTextTable,
   sumModulePowerDraw,
 } from "./formatters.js";
-import type { KeplerBlueprint, HabitatBlueprint, HabitatModule, KeplerRegistration, KeplerStarterModule } from "./types.js";
+import type {
+  KeplerBlueprint,
+  HabitatBlueprint,
+  HabitatModule,
+  KeplerRegistration,
+  KeplerRegistrationResponse,
+  KeplerStarterModule,
+} from "./types.js";
 
 let apiClient = createApiClient();
 let keplerBaseUrl = "";
@@ -53,10 +65,9 @@ export function createProgram(): Command {
     .requiredOption("--name <name>", "habitat name")
     .action(async (options: { name: string }) => {
       try {
-        const response = await apiClient.postJson<{ registration: KeplerRegistration }>("/commands/register", {
-          name: options.name,
-        });
-        console.log(`Registered habitat ${response.registration.displayName}.`);
+        const registration = await registerWithKepler(options.name);
+        saveState(registration);
+        console.log(`Registered habitat ${registration.displayName}.`);
       } catch (error) {
         console.error(formatApiError(error));
         process.exitCode = 1;
@@ -79,7 +90,7 @@ export function createProgram(): Command {
         console.log(`Last seen at: ${habitat.lastSeenAt ?? "unknown"}`);
         console.log(`Modules created: ${formatModuleSummary(registration)}`);
       } catch (error) {
-        console.error(formatApiError(error));
+        console.error(formatRecentCommandError(error, "Human move"));
         process.exitCode = 1;
       }
     });
@@ -94,12 +105,13 @@ export function createProgram(): Command {
         const registration = loadStateOrFail();
         const tickCount = Math.floor(options.ticks);
         const secondsPerTick = parseTickUnit(unit);
-        const solarResponse = await apiClient.getJson<{ solarIrradiance: { wPerM2: number; [key: string]: unknown } }>("/solar/status");
-
         if (tickCount <= 0) {
           throw new Error("ticks must be greater than zero.");
         }
 
+        const solarResponse = normalizeSolarStatus(
+          await apiClient.getJson<Record<string, unknown> | { solarIrradiance?: Record<string, unknown> }>("/solar/status"),
+        );
         const nextState = applyTickWithSolarIrradiance(registration, tickCount * secondsPerTick, solarResponse.solarIrradiance);
         const constructionResult = advanceConstruction(tickCount * secondsPerTick);
         const completedModule = constructionResult.completedJob
@@ -140,7 +152,9 @@ export function createProgram(): Command {
     .description("Show the current solar irradiance from Kepler.")
     .action(async () => {
       try {
-        const solarResponse = await apiClient.getJson<{ solarIrradiance: { wPerM2: number; [key: string]: unknown } }>("/solar/status");
+        const solarResponse = normalizeSolarStatus(
+          await apiClient.getJson<Record<string, unknown> | { solarIrradiance?: Record<string, unknown> }>("/solar/status"),
+        );
         console.log(formatSolarIrradiance(solarResponse.solarIrradiance));
       } catch (error) {
         console.error((error as Error).message);
@@ -153,10 +167,9 @@ export function createProgram(): Command {
     .description("Unregister this Habitat CLI from Kepler.")
     .action(async () => {
       try {
-        const response = await apiClient.postJson<{ ok: boolean }>("/commands/unregister");
-        if (response.ok) {
-          console.log("Habitat unregistered.");
-        }
+        clearLocalHabitatState();
+        clearPowerHistory();
+        console.log("Habitat unregistered.");
       } catch (error) {
         console.error(formatApiError(error));
         process.exitCode = 1;
@@ -167,6 +180,52 @@ export function createProgram(): Command {
   const blueprintCommand = program.command("blueprint").description("Inspect the official Kepler blueprint catalog.");
   const resourceCommand = program.command("resource").description("Inspect the official Kepler resource catalog.");
   const inventoryCommand = program.command("inventory").description("Manage local habitat inventory.");
+  const humanCommand = program.command("human").description("Inspect local Habitat humans.");
+  const evaCommand = program.command("eva").description("Manage local EVA exploration.");
+
+  evaCommand.command("status").description("Show EVA status.").action(async () => {
+    try { console.log(JSON.stringify(await apiClient.getJson("/eva/status"), null, 2)); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+  evaCommand.command("deploy").description("Deploy a human through the basic suitport.").argument("<human-id>", "human id").action(async (humanId: string) => {
+    try { console.log(JSON.stringify((await apiClient.postJson(`/eva/deploy`, { humanId })), null, 2)); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+  evaCommand.command("move").description("Move the deployed explorer.").argument("<x>", "x coordinate").argument("<y>", "y coordinate").action(async (x: string, y: string) => {
+    try { console.log(JSON.stringify((await apiClient.postJson(`/eva/move`, { x: Number(x), y: Number(y) })), null, 2)); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+  evaCommand.command("dock").description("Return the explorer through the basic suitport.").action(async () => {
+    try { console.log(JSON.stringify((await apiClient.postJson(`/eva/dock`)), null, 2)); }
+    catch (error) { console.error((error as Error).message); process.exitCode = 1; }
+  });
+
+  humanCommand
+    .command("list")
+    .description("List local Habitat humans.")
+    .action(() => {
+      try {
+        console.log(formatHumanList(listHumans()));
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  humanCommand
+    .command("move")
+    .description("Move a human to a local Habitat module.")
+    .argument("<human-id>", "human id")
+    .argument("<module-id>", "destination module id")
+    .action(async (humanId: string, moduleId: string) => {
+      try {
+        const result = await apiClient.postJson<{ human: { displayName: string }; moduleSelector?: string }>(`/humans/${encodeURIComponent(humanId)}/move`, { moduleId });
+        console.log(`${result.human.displayName} moved to ${result.moduleSelector ?? moduleId}.`);
+      } catch (error) {
+        console.error(formatRecentCommandError(error, "Human move"));
+        process.exitCode = 1;
+      }
+    });
   const constructionCommand = program.command("construction").description("Inspect local module construction.");
   const constructAction = createConstructAction();
   const powerCommand = program.command("power").description("Inspect local power behavior.");
@@ -248,8 +307,7 @@ export function createProgram(): Command {
     .description("List local habitat inventory.")
     .action(async () => {
       try {
-        const response = await apiClient.getJson<{ inventory: { items: unknown[] } }>("/inventory");
-        console.log(formatInventoryList(response.inventory as any));
+        console.log(formatInventoryList(loadInventoryState()));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -274,14 +332,13 @@ export function createProgram(): Command {
       },
     ) => {
         try {
-          const response = await apiClient.postJson<{ item: import("./types.js").HabitatInventoryItem }>("/inventory/set", {
+          const item = setInventoryQuantity({
             resourceId: parseNonEmptyString(resourceId, "resource id"),
             quantity,
             displayName: options.name,
             unit: options.unit,
             category: options.category,
           });
-          const item = response.item;
           console.log(`Inventory set: ${item.resourceId} = ${item.quantity}${item.unit ? ` ${item.unit}` : ""}.`);
         } catch (error) {
           console.error((error as Error).message);
@@ -363,14 +420,13 @@ export function createProgram(): Command {
       },
     ) => {
         try {
-          const response = await apiClient.postJson<{ item: import("./types.js").HabitatInventoryItem }>("/inventory/add", {
+          const item = addInventoryQuantity({
             resourceId: parseNonEmptyString(resourceId, "resource id"),
             amount,
             displayName: options.name,
             unit: options.unit,
             category: options.category,
           });
-          const item = response.item;
           console.log(`Inventory added: ${item.resourceId} = ${item.quantity}${item.unit ? ` ${item.unit}` : ""}.`);
         } catch (error) {
           console.error((error as Error).message);
@@ -421,7 +477,9 @@ export function createProgram(): Command {
     .action(async () => {
       try {
         const registration = loadStateOrFail();
-        const solarResponse = await apiClient.getJson<{ solarIrradiance: { wPerM2: number; [key: string]: unknown } }>("/solar/status");
+        const solarResponse = normalizeSolarStatus(
+          await apiClient.getJson<Record<string, unknown> | { solarIrradiance?: Record<string, unknown> }>("/solar/status"),
+        );
         console.log(formatPowerOverview(registration, solarResponse.solarIrradiance));
       } catch (error) {
         console.error((error as Error).message);
@@ -436,12 +494,13 @@ export function createProgram(): Command {
     .argument("<status>", "offline, idle, online, active, or damaged")
     .action(async (moduleId: string, status: string) => {
       try {
-        const response = await apiClient.patchJson<{ module: HabitatModule }>(`/modules/${encodeURIComponent(moduleId)}/status`, {
-          status: parseModuleStatus(status),
-        });
-        const module = response.module;
+        const registration = loadStateOrFail();
+        const module = resolveModule(registration, moduleId);
+        const nextRegistration = setModuleStatus(registration, module.id, parseModuleStatus(status));
+        const nextModule = nextRegistration.modules.find((entry) => entry.id === module.id)!;
+        saveState(nextRegistration);
         console.log(
-          `Module ${module.selector} status set to ${getDeclaredModuleStatus(module)}; current power draw ${formatPowerDraw(getModulePowerDraw(module))} kW.`,
+          `Module ${nextModule.selector} status set to ${getDeclaredModuleStatus(nextModule)}; current power draw ${formatPowerDraw(getModulePowerDraw(nextModule))} kW.`,
         );
       } catch (error) {
         console.error((error as Error).message);
@@ -468,14 +527,21 @@ export function createProgram(): Command {
         },
       ) => {
         try {
-          const response = await apiClient.postJson<{ module: HabitatModule }>("/modules", {
-            name: parseNonEmptyString(name, "Module name"),
-            blueprintId: options.blueprintId,
+          const registration = loadStateOrFail();
+          const module = ensureDefaultModuleRuntimeStatus({
+            id: randomUUID(),
+            selector: makeUniqueSelector(randomUUID(), registration.modules),
+            blueprintId: options.blueprintId ?? "custom-module",
+            displayName: parseNonEmptyString(name, "Module name"),
             connectedTo: options.connectedTo,
-            runtimeAttributes: options.runtimeAttribute.length > 0 ? parseKeyValuePairs(options.runtimeAttribute, "runtime attribute") : undefined,
+            runtimeAttributes: options.runtimeAttribute.length > 0 ? parseKeyValuePairs(options.runtimeAttribute, "runtime attribute") : {},
             capabilities: options.capability,
           });
-          console.log(`Module created: ${response.module.displayName}`);
+          saveState({
+            ...registration,
+            modules: [...registration.modules, module],
+          });
+          console.log(`Module created: ${module.displayName}`);
         } catch (error) {
           console.error((error as Error).message);
           process.exitCode = 1;
@@ -488,7 +554,7 @@ export function createProgram(): Command {
     .description("List local modules.")
     .action(async () => {
       try {
-        const registration = await apiClient.getJson<{ modules: HabitatModule[] }>("/modules");
+        const registration = loadStateOrFail();
         if (registration.modules.length === 0) {
           console.log("No modules found.");
           return;
@@ -509,10 +575,9 @@ export function createProgram(): Command {
     .argument("<selector>", "module selector or id")
     .action(async (selector: string) => {
       try {
-        const response = await apiClient.getJson<{ module: HabitatModule; construction?: import("./types.js").HabitatConstructionJob | null }>(
-          `/modules/${encodeURIComponent(selector)}`,
-        );
-        console.log(formatModuleDetails(response.module, response.construction ?? null));
+        const registration = loadStateOrFail();
+        const module = resolveModule(registration, selector);
+        console.log(formatModuleDetails(module, loadConstructionState().activeJob));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -540,15 +605,22 @@ export function createProgram(): Command {
         },
       ) => {
         try {
-          const response = await apiClient.patchJson<{ module: HabitatModule }>(`/modules/${encodeURIComponent(selector)}`, {
-            name: options.name,
-            blueprintId: options.blueprintId,
-            connectedTo: options.connectedTo,
+          const registration = loadStateOrFail();
+          const currentModule = resolveModule(registration, selector);
+          const nextModule: HabitatModule = {
+            ...currentModule,
+            displayName: options.name?.trim() || currentModule.displayName,
+            blueprintId: options.blueprintId ?? currentModule.blueprintId,
+            connectedTo: options.connectedTo.length > 0 ? options.connectedTo : currentModule.connectedTo,
             runtimeAttributes:
-              options.runtimeAttribute.length > 0 ? parseKeyValuePairs(options.runtimeAttribute, "runtime attribute") : undefined,
-            capabilities: options.capability,
+              options.runtimeAttribute.length > 0 ? parseKeyValuePairs(options.runtimeAttribute, "runtime attribute") : currentModule.runtimeAttributes,
+            capabilities: options.capability.length > 0 ? options.capability : currentModule.capabilities,
+          };
+          saveState({
+            ...registration,
+            modules: registration.modules.map((module) => (module.id === currentModule.id ? nextModule : module)),
           });
-          console.log(`Module updated: ${response.module.displayName}`);
+          console.log(`Module updated: ${nextModule.displayName}`);
         } catch (error) {
           console.error((error as Error).message);
           process.exitCode = 1;
@@ -562,7 +634,13 @@ export function createProgram(): Command {
     .argument("<selector>", "module selector or id")
     .action(async (selector: string) => {
       try {
-        await apiClient.deleteJson<{ ok: boolean }>(`/modules/${encodeURIComponent(selector)}`);
+        const registration = loadStateOrFail();
+        const currentModule = resolveModule(registration, selector);
+        assertModuleCanBeDeleted(currentModule.id);
+        saveState({
+          ...registration,
+          modules: registration.modules.filter((module) => module.id !== currentModule.id),
+        });
         console.log(`Module deleted: ${selector}`);
       } catch (error) {
         console.error((error as Error).message);
@@ -580,13 +658,14 @@ export function createProgram(): Command {
 }
 
 async function registerWithKepler(displayName: string): Promise<KeplerRegistration> {
-  ensureKeplerEnv(keplerBaseUrl, keplerPlanetToken);
+  const keplerBaseUrl = process.env.KEPLER_BASE_URL ?? "https://planet.turingguild.com";
+  const keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
 
   const habitatUuid = randomUUID();
   const response = await fetch(`${keplerBaseUrl}/habitats/register`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${keplerPlanetToken}`,
+      ...(keplerPlanetToken ? { Authorization: `Bearer ${keplerPlanetToken}` } : {}),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -599,11 +678,7 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
     throw new Error(`Kepler registration failed with ${response.status} ${response.statusText}`);
   }
 
-  const payload = (await response.json()) as {
-    habitatId: string;
-    starterModules: KeplerStarterModule[];
-    blueprints: KeplerBlueprint[];
-  };
+  const payload = (await response.json()) as KeplerRegistrationResponse;
 
   const habitat = await fetchKeplerHabitatStatus(payload.habitatId).catch(() => ({
     id: payload.habitatId,
@@ -618,22 +693,28 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
     habitatId: payload.habitatId,
     habitatUuid,
     displayName,
+    streamUrl: payload.streamUrl ?? "wss://planet.turingguild.com/planet/stream",
+    apiToken: payload.apiToken ?? "",
+    stream:
+      payload.stream ?? {
+        protocolVersion: "1.0",
+        subscriptions: ["ticks"],
+        currentTick: 0,
+        tickIntervalMs: 1000,
+        ticksPerPulse: 1,
+        status: "paused",
+      },
+    contracts: payload.contracts ?? {
+      alerts: {
+        schemaVersion: "1.0",
+        schema: {},
+      },
+    },
     habitat,
-    modules: payload.starterModules.map((starterModule) =>
+    modules: payload.starterModules.map((starterModule, index) =>
       ensureDefaultModuleRuntimeStatus({
         id: starterModule.id,
-        selector: makeUniqueSelector(
-          starterModule.id,
-          payload.starterModules.map((module) => ({
-            id: module.id,
-            selector: deriveSelector(module.id),
-            blueprintId: module.blueprintId,
-            displayName: module.displayName,
-            connectedTo: module.connectedTo,
-            runtimeAttributes: module.runtimeAttributes,
-            capabilities: module.capabilities,
-          })),
-        ),
+        selector: getStarterModuleSelector(starterModule, index, payload.starterModules),
         blueprintId: starterModule.blueprintId,
         displayName: starterModule.displayName,
         connectedTo: starterModule.connectedTo,
@@ -662,17 +743,25 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
       attachmentPoints: blueprint.attachmentPoints ?? {},
       attachmentRequirements: blueprint.attachmentRequirements ?? [],
       runtimeAttributes: blueprint.runtimeAttributes ?? {},
-      capabilities: blueprint.capabilities ?? [],
+        capabilities: blueprint.capabilities ?? [],
+      })),
+    humans: (payload.starterHumans ?? []).map((human) => ({
+      id: human.id,
+      displayName: human.displayName,
+      locationModuleId: human.locationModuleId,
+      status: "present",
     })),
+    alerts: [],
   };
 }
 
 async function fetchKeplerHabitatStatus(habitatId: string): Promise<KeplerRegistration["habitat"]> {
-  ensureKeplerEnv(keplerBaseUrl, keplerPlanetToken);
+  const keplerBaseUrl = process.env.KEPLER_BASE_URL ?? "https://planet.turingguild.com";
+  const keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
 
   const response = await fetch(`${keplerBaseUrl}/habitats/${habitatId}`, {
     headers: {
-      Authorization: `Bearer ${keplerPlanetToken}`,
+      ...(keplerPlanetToken ? { Authorization: `Bearer ${keplerPlanetToken}` } : {}),
     },
   });
 
@@ -772,6 +861,26 @@ function formatApiError(error: unknown): string {
   return (error as Error).message;
 }
 
+function formatRecentCommandError(error: unknown, action: string): string {
+  if (error instanceof ApiError && error.status === 404 && /^404\s+not found\.?$/i.test(error.message)) {
+    return `${action} failed: the local Habitat API does not expose this route. Restart the Habitat API and try again.`;
+  }
+
+  return formatApiError(error);
+}
+
+function normalizeSolarStatus(payload: Record<string, unknown>): { solarIrradiance: { wPerM2: number; [key: string]: unknown } } {
+  if ("solarIrradiance" in payload && payload.solarIrradiance && typeof payload.solarIrradiance === "object") {
+    return {
+      solarIrradiance: payload.solarIrradiance as { wPerM2: number; [key: string]: unknown },
+    };
+  }
+
+  return {
+    solarIrradiance: payload as { wPerM2: number; [key: string]: unknown },
+  };
+}
+
 function resolveModule(registration: KeplerRegistration, selector: string): HabitatModule {
   const exactMatches = registration.modules.filter(
     (module) => module.id === selector || module.selector === selector || module.blueprintId === selector,
@@ -832,6 +941,16 @@ function deriveSelector(identifier: string): string {
   return normalized;
 }
 
+function getStarterModuleSelector(
+  starterModule: KeplerStarterModule,
+  index: number,
+  starterModules: KeplerStarterModule[],
+): string {
+  const base = deriveSelector(starterModule.blueprintId);
+  const occurrence = starterModules.slice(0, index + 1).filter((module) => module.blueprintId === starterModule.blueprintId).length;
+  return `${base}-${occurrence}`;
+}
+
 function makeUniqueSelector(identifier: string, modules: HabitatModule[], currentId?: string): string {
   const baseSelector = deriveSelector(identifier);
   const takenSelectors = new Set(
@@ -844,15 +963,17 @@ function makeUniqueSelector(identifier: string, modules: HabitatModule[], curren
     return baseSelector;
   }
 
-  let suffix = 2;
-  while (takenSelectors.has(`${baseSelector}-${suffix}`)) {
+  const match = baseSelector.match(/^(.*)-(\d+)$/);
+  const selectorRoot = match?.[1] ?? baseSelector;
+  let suffix = match ? Number(match[2]) + 1 : 2;
+  while (takenSelectors.has(`${selectorRoot}-${suffix}`)) {
     suffix += 1;
   }
 
-  return `${baseSelector}-${suffix}`;
+  return `${selectorRoot}-${suffix}`;
 }
 
-function createConstructedModule(registration: KeplerRegistration, job: import("./types.js").HabitatConstructionJob): HabitatModule {
+export function createConstructedModule(registration: KeplerRegistration, job: import("./types.js").HabitatConstructionJob): HabitatModule {
   const existingModuleCount = registration.modules.filter((module) => module.blueprintId === job.blueprintId).length;
   const nextNumber = existingModuleCount + 1;
   const identifier = `${registration.habitatId}_${job.moduleType}_${nextNumber}`;

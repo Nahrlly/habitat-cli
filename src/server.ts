@@ -1,12 +1,25 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
-import type { HabitatModule, KeplerBlueprint, KeplerRegistration, KeplerStarterModule } from "./types.js";
-import { loadKeplerRegistration } from "./state.js";
+import type {
+  HabitatAlert,
+  HabitatHuman,
+  HabitatModule,
+  KeplerBlueprint,
+  KeplerRegistration,
+  KeplerRegistrationResponse,
+  KeplerStarterModule,
+} from "./types.js";
+import { loadKeplerRegistration, setModuleStatus } from "./state.js";
 import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, saveState } from "./state.js";
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
-import { loadConstructionState, saveConstructionState } from "./construction-state.js";
+import { advanceConstruction, loadConstructionState, saveConstructionState } from "./construction-state.js";
+import { assertModuleCanBeDeleted, createHuman, deleteHuman, listHumans, moveHuman, updateHuman } from "./human-domain.js";
+import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds } from "./eva-domain.js";
+import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
+import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
+import { createConstructedModule } from "./commands.js";
 
 export const app = new Hono();
 
@@ -53,6 +66,175 @@ app.get("/modules", (c) => {
   return c.json({ modules: registration.modules });
 });
 
+app.get("/humans", (c) => {
+  try {
+    return c.json({ humans: listHumans() });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 404);
+  }
+});
+
+app.get("/eva/status", (c) => {
+  try { return c.json({ eva: getEvaStatus() }); }
+  catch (error) { return c.json({ error: (error as Error).message }, 404); }
+});
+app.post("/eva/deploy", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { humanId?: string } | null;
+  if (!body?.humanId?.trim()) return c.json({ error: "humanId is required." }, 400);
+  try { return c.json({ eva: deployEva(body.humanId.trim()) }); }
+  catch (error) { return c.json({ error: (error as Error).message }, 409); }
+});
+app.post("/eva/move", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { x?: number; y?: number } | null;
+  if (!Number.isFinite(body?.x) || !Number.isFinite(body?.y)) return c.json({ error: "x and y coordinates are required." }, 400);
+  try {
+    const registration = loadKeplerRegistration();
+    if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
+    const sector = await createWorldClient().getCurrentSector(registration.habitatId);
+    return c.json({ eva: moveEva(body!.x!, body!.y!, readSectorBounds(sector)) });
+  }
+  catch (error) { return c.json({ error: (error as Error).message }, 409); }
+});
+app.post("/eva/dock", (c) => {
+  try { return c.json({ eva: dockEva() }); }
+  catch (error) { return c.json({ error: (error as Error).message }, 409); }
+});
+
+app.post("/humans", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { displayName?: string; locationModuleId?: string } | null;
+  if (!body?.displayName?.trim() || !body?.locationModuleId?.trim()) {
+    return c.json({ error: "displayName and locationModuleId are required." }, 400);
+  }
+
+  try {
+    return c.json({ human: createHuman(body.displayName, body.locationModuleId) }, 201);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 404);
+  }
+});
+
+app.patch("/humans/:id", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as Partial<Pick<HabitatHuman, "displayName" | "locationModuleId" | "status">> | null;
+  try {
+    return c.json({ human: updateHuman(c.req.param("id"), body ?? {}) });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 404);
+  }
+});
+
+app.delete("/humans/:id", (c) => {
+  try {
+    deleteHuman(c.req.param("id"));
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 404);
+  }
+});
+
+app.post("/humans/:id/move", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { moduleId?: string } | null;
+  if (!body?.moduleId?.trim()) {
+    return c.json({ error: "moduleId is required." }, 400);
+  }
+
+  try {
+    const human = moveHuman(c.req.param("id"), body.moduleId.trim());
+    const module = loadKeplerRegistration()?.modules.find((entry) => entry.id === human.locationModuleId);
+    return c.json({ human, moduleSelector: module?.selector ?? human.locationModuleId });
+  } catch (error) {
+    const message = (error as Error).message;
+    return c.json({ error: message }, message.startsWith("Human not found:") || message.startsWith("Destination module not found:") ? 404 : 409);
+  }
+});
+
+app.get("/alerts", (c) => {
+  const registration = loadKeplerRegistration();
+
+  if (!registration) {
+    return c.json({ error: "Habitat is not registered." }, 404);
+  }
+
+  return c.json({ alerts: registration.alerts, contract: registration.contracts.alerts });
+});
+
+app.post("/alerts", async (c) => {
+  const registration = loadKeplerRegistration();
+
+  if (!registration) {
+    return c.json({ error: "Habitat is not registered." }, 404);
+  }
+
+  const body = (await c.req.json().catch(() => null)) as Partial<HabitatAlert> | null;
+  if (!body?.type?.trim() || !body?.severity?.trim() || !body?.message?.trim()) {
+    return c.json({ error: "type, severity, and message are required." }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const alert: HabitatAlert = {
+    id: randomUUID(),
+    schemaVersion: registration.contracts.alerts.schemaVersion,
+    type: body.type.trim(),
+    severity: body.severity.trim(),
+    status: body.status?.trim() || "open",
+    source: body.source?.trim() || "habitat-local",
+    message: body.message.trim(),
+    createdAt: now,
+    updatedAt: now,
+    details: body.details && typeof body.details === "object" ? body.details : {},
+  };
+
+  saveState({ ...registration, alerts: [...registration.alerts, alert] });
+  return c.json({ alert }, 201);
+});
+
+app.patch("/alerts/:id", async (c) => {
+  const registration = loadKeplerRegistration();
+
+  if (!registration) {
+    return c.json({ error: "Habitat is not registered." }, 404);
+  }
+
+  const currentAlert = registration.alerts.find((alert) => alert.id === c.req.param("id"));
+  if (!currentAlert) {
+    return c.json({ error: `Alert not found: ${c.req.param("id")}.` }, 404);
+  }
+
+  const body = (await c.req.json().catch(() => null)) as Partial<HabitatAlert> | null;
+  const nextAlert: HabitatAlert = {
+    ...currentAlert,
+    type: body?.type?.trim() || currentAlert.type,
+    severity: body?.severity?.trim() || currentAlert.severity,
+    status: body?.status?.trim() || currentAlert.status,
+    source: body?.source?.trim() || currentAlert.source,
+    message: body?.message?.trim() || currentAlert.message,
+    updatedAt: new Date().toISOString(),
+    details: body?.details && typeof body.details === "object" ? body.details : currentAlert.details,
+  };
+
+  saveState({
+    ...registration,
+    alerts: registration.alerts.map((alert) => (alert.id === nextAlert.id ? nextAlert : alert)),
+  });
+
+  return c.json({ alert: nextAlert });
+});
+
+app.delete("/alerts/:id", (c) => {
+  const registration = loadKeplerRegistration();
+
+  if (!registration) {
+    return c.json({ error: "Habitat is not registered." }, 404);
+  }
+
+  const nextAlerts = registration.alerts.filter((alert) => alert.id !== c.req.param("id"));
+  if (nextAlerts.length === registration.alerts.length) {
+    return c.json({ error: `Alert not found: ${c.req.param("id")}.` }, 404);
+  }
+
+  saveState({ ...registration, alerts: nextAlerts });
+  return c.json({ ok: true });
+});
+
 app.get("/modules/:selector", (c) => {
   const registration = loadKeplerRegistration();
 
@@ -63,10 +245,17 @@ app.get("/modules/:selector", (c) => {
   const module = resolveModule(registration.modules, c.req.param("selector"));
 
   if (!module) {
-    return c.json({ error: "Module not found." }, 404);
+    return c.json({ error: `Module not found: ${c.req.param("selector")}.` }, 404);
   }
 
-  return c.json({ module, construction: loadConstructionState().activeJob });
+  const activeJob = loadConstructionState().activeJob;
+  const isFabricator = activeJob !== null && (
+    activeJob.fabricatorId === module.id ||
+    activeJob.fabricatorSelector === module.selector ||
+    activeJob.selector === module.selector
+  );
+
+  return c.json({ module, construction: isFabricator ? activeJob : null });
 });
 
 app.post("/modules", async (c) => {
@@ -121,7 +310,7 @@ app.patch("/modules/:selector", async (c) => {
 
   const currentModule = resolveModule(registration.modules, c.req.param("selector"));
   if (!currentModule) {
-    return c.json({ error: "Module not found." }, 404);
+    return c.json({ error: `Module not found: ${c.req.param("selector")}.` }, 404);
   }
 
   const body = (await c.req.json().catch(() => null)) as Partial<{
@@ -158,7 +347,13 @@ app.delete("/modules/:selector", (c) => {
 
   const currentModule = resolveModule(registration.modules, c.req.param("selector"));
   if (!currentModule) {
-    return c.json({ error: "Module not found." }, 404);
+    return c.json({ error: `Module not found: ${c.req.param("selector")}.` }, 404);
+  }
+
+  try {
+    assertModuleCanBeDeleted(currentModule.id);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 409);
   }
 
   saveState({
@@ -178,7 +373,7 @@ app.patch("/modules/:selector/status", async (c) => {
 
   const currentModule = resolveModule(registration.modules, c.req.param("selector"));
   if (!currentModule) {
-    return c.json({ error: "Module not found." }, 404);
+    return c.json({ error: `Module not found: ${c.req.param("selector")}.` }, 404);
   }
 
   const body = (await c.req.json().catch(() => null)) as { status?: string } | null;
@@ -186,17 +381,15 @@ app.patch("/modules/:selector/status", async (c) => {
     return c.json({ error: "status is required." }, 400);
   }
 
-  const nextModule = {
-    ...currentModule,
-    runtimeAttributes: { ...currentModule.runtimeAttributes, status: body.status },
-  };
+  const validStatuses = new Set(["offline", "idle", "online", "active", "damaged"]);
+  if (!validStatuses.has(body.status)) {
+    return c.json({ error: "status must be offline, idle, online, active, or damaged." }, 400);
+  }
 
-  saveState({
-    ...registration,
-    modules: registration.modules.map((module) => (module.id === currentModule.id ? nextModule : module)),
-  });
+  const nextRegistration = setModuleStatus(registration, currentModule.id, body.status);
+  saveState(nextRegistration);
 
-  return c.json({ module: nextModule });
+  return c.json({ module: nextRegistration.modules.find((module) => module.id === currentModule.id), modules: nextRegistration.modules });
 });
 
 app.get("/inventory", () => {
@@ -243,6 +436,46 @@ app.post("/inventory/add", async (c) => {
   return c.json({ item });
 });
 
+app.post("/world/collect", async (c) => {
+  try {
+    const registration = loadKeplerRegistration();
+    if (!registration) {
+      return c.json({ error: "Habitat is not registered." }, 404);
+    }
+
+    const body = (await c.req.json().catch(() => null)) as { x?: number; y?: number; quantityKg?: number } | null;
+    if (typeof body?.x !== "number" || typeof body?.y !== "number" || typeof body?.quantityKg !== "number") {
+      return c.json({ error: "x, y, and quantityKg are required." }, 400);
+    }
+
+    const collection = await createWorldClient().collect({
+      habitatId: registration.habitatId,
+      x: body.x,
+      y: body.y,
+      quantityKg: body.quantityKg,
+    });
+
+    return c.json(collection);
+  } catch (error) {
+    return friendlyError(c, error);
+  }
+});
+
+app.get("/world/sectors/current", async (c) => {
+  try {
+    const registration = loadKeplerRegistration();
+    if (!registration) {
+      return c.json({ error: "Habitat is not registered." }, 404);
+    }
+
+    const habitatId = c.req.query("habitatId") ?? registration.habitatId;
+    const sector = await createWorldClient().getCurrentSector(habitatId);
+    return c.json(sector);
+  } catch (error) {
+    return friendlyError(c, error);
+  }
+});
+
 app.post("/commands/register", async (c) => {
   try {
     const body = (await c.req.json().catch(() => null)) as { name?: string } | null;
@@ -274,7 +507,29 @@ app.post("/commands/unregister", async (c) => {
     }
 
     await unregisterFromKepler(registration.habitatId);
+    clearPowerHistory();
     return c.json({ ok: true });
+  } catch (error) {
+    return friendlyError(c, error);
+  }
+});
+
+app.post("/commands/tick", async (c) => {
+  const registration = loadKeplerRegistration();
+  if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
+  const body = (await c.req.json().catch(() => null)) as { ticks?: number } | null;
+  if (!Number.isSafeInteger(body?.ticks) || body!.ticks! <= 0) {
+    return c.json({ error: "ticks must be a positive whole number." }, 400);
+  }
+
+  try {
+    const solarIrradiance = await createCatalogClient().getSolarIrradiance();
+    const report = applyTickWithSolarIrradiance(registration, body!.ticks!, solarIrradiance);
+    const construction = advanceConstruction(body!.ticks!);
+    const completedModule = construction.completedJob ? createConstructedModule(report.registration, construction.completedJob) : null;
+    const persistedRegistration = completedModule ? { ...report.registration, modules: [...report.registration.modules, completedModule] } : report.registration;
+    saveState(persistedRegistration);
+    return c.json({ ticks: body!.ticks, registration: persistedRegistration, construction, completedModule, totalPowerDraw: report.totalPowerDraw, totalSolarGeneration: report.totalSolarGeneration, batteryBefore: report.batteryBefore, batteryAfter: report.batteryAfter, solarChargeReason: report.solarChargeReason });
   } catch (error) {
     return friendlyError(c, error);
   }
@@ -294,7 +549,7 @@ app.get("/catalog/blueprints/:blueprintId", async (c) => {
     const blueprint = await createCatalogClient().getBlueprint(c.req.param("blueprintId"));
 
     if (!blueprint) {
-      return c.json({ error: "Blueprint not found." }, 404);
+    return c.json({ error: `Blueprint not found in the Kepler catalog: ${c.req.param("blueprintId")}.` }, 404);
     }
 
     return c.json({ blueprint });
@@ -320,6 +575,21 @@ app.get("/solar/status", async (c) => {
     return friendlyError(c, error);
   }
 });
+
+app.get("/power/overview", async (c) => {
+  const registration = loadKeplerRegistration();
+  if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
+  try {
+    const solarIrradiance = await createCatalogClient().getSolarIrradiance();
+    const report = applyTickWithSolarIrradiance(registration, 3600, solarIrradiance);
+    recordPowerHistory({ recordedAt: new Date().toISOString(), generationKw: report.totalSolarGeneration, consumptionKw: report.totalPowerDraw, netKw: report.totalSolarGeneration - report.totalPowerDraw, modules: registration.modules.map((module) => ({ selector: module.selector, displayName: module.displayName, powerKw: getModulePowerDraw(module) })) });
+    return c.json({ generationKw: report.totalSolarGeneration, consumptionKw: report.totalPowerDraw, netKw: report.totalSolarGeneration - report.totalPowerDraw, solarIrradiance });
+  } catch (error) {
+    return friendlyError(c, error);
+  }
+});
+
+app.get("/power/history", (c) => c.json({ history: loadPowerHistory(Number(c.req.query("limit") ?? 120)) }));
 
 app.get("/world/scan", async (c) => {
   try {
@@ -363,20 +633,15 @@ app.get("/world/scan", async (c) => {
   }
 });
 
-app.get("/", (c) => {
-  return c.json({
-    service: "habitat-backend",
-    routes: [
-      "GET /health",
-      "GET /registration",
-      "GET /modules",
-      "GET /inventory",
-      "GET /catalog/blueprints",
-      "GET /catalog/resources",
-      "GET /solar/status",
-      "GET /world/scan",
-    ],
-  });
+app.get("/", async () => {
+  const file = Bun.file("dist/index.html");
+  return new Response(await file.arrayBuffer(), { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+});
+
+app.get("/assets/*", async (c) => {
+  const file = Bun.file(`dist/${c.req.path.slice(1)}`);
+  if (!(await file.exists())) return c.notFound();
+  return new Response(await file.arrayBuffer(), { headers: { "Content-Type": contentTypeForPath(c.req.path) } });
 });
 
 const host = process.env.HABITAT_API_HOST ?? "127.0.0.1";
@@ -411,11 +676,7 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
     throw new Error(`Kepler registration failed with ${response.status} ${response.statusText}`);
   }
 
-  const payload = (await response.json()) as {
-    habitatId: string;
-    starterModules: KeplerStarterModule[];
-    blueprints: KeplerBlueprint[];
-  };
+  const payload = (await response.json()) as KeplerRegistrationResponse;
 
   const habitat = {
     id: payload.habitatId,
@@ -430,11 +691,28 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
     habitatId: payload.habitatId,
     habitatUuid,
     displayName,
+    streamUrl: payload.streamUrl ?? "wss://planet.turingguild.com/planet/stream",
+    apiToken: payload.apiToken ?? "",
+    stream:
+      payload.stream ?? {
+        protocolVersion: "1.0",
+        subscriptions: ["ticks"],
+        currentTick: 0,
+        tickIntervalMs: 1000,
+        ticksPerPulse: 1,
+        status: "paused",
+      },
+    contracts: payload.contracts ?? {
+      alerts: {
+        schemaVersion: "1.0",
+        schema: {},
+      },
+    },
     habitat,
-    modules: payload.starterModules.map((starterModule) =>
+    modules: payload.starterModules.map((starterModule, index) =>
       ensureStarterModuleRuntimeStatus({
         id: starterModule.id,
-        selector: starterModule.id,
+        selector: getStarterModuleSelector(starterModule, index, payload.starterModules),
         blueprintId: starterModule.blueprintId,
         displayName: starterModule.displayName,
         connectedTo: starterModule.connectedTo,
@@ -460,8 +738,15 @@ async function registerWithKepler(displayName: string): Promise<KeplerRegistrati
       attachmentPoints: blueprint.attachmentPoints ?? {},
       attachmentRequirements: blueprint.attachmentRequirements ?? [],
       runtimeAttributes: blueprint.runtimeAttributes ?? {},
-      capabilities: blueprint.capabilities ?? [],
+        capabilities: blueprint.capabilities ?? [],
+      })),
+    humans: (payload.starterHumans ?? []).map((human) => ({
+      id: human.id,
+      displayName: human.displayName,
+      locationModuleId: human.locationModuleId,
+      status: "present",
     })),
+    alerts: [],
   };
 }
 
@@ -525,6 +810,16 @@ function resolveModule(modules: HabitatModule[], selector: string): HabitatModul
   return modules.find((module) => module.id === selector || module.selector === selector || module.blueprintId === selector) ?? null;
 }
 
+function getStarterModuleSelector(
+  starterModule: KeplerStarterModule,
+  index: number,
+  starterModules: KeplerStarterModule[],
+): string {
+  const base = starterModule.blueprintId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "module";
+  const occurrence = starterModules.slice(0, index + 1).filter((module) => module.blueprintId === starterModule.blueprintId).length;
+  return `${base}-${occurrence}`;
+}
+
 function makeUniqueSelector(identifier: string, modules: HabitatModule[]): string {
   const baseSelector = identifier
     .toLowerCase()
@@ -545,6 +840,21 @@ function makeUniqueSelector(identifier: string, modules: HabitatModule[]): strin
   return `${baseSelector}-${suffix}`;
 }
 
+function readSectorBounds(payload: Record<string, unknown>): EvaSectorBounds | undefined {
+  const candidates = [payload, isRecord(payload.sector) ? payload.sector : null, isRecord(payload.bounds) ? payload.bounds : null];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const minX = candidate.minX ?? candidate.xMin;
+    const maxX = candidate.maxX ?? candidate.xMax;
+    const minY = candidate.minY ?? candidate.yMin;
+    const maxY = candidate.maxY ?? candidate.yMax;
+    if ([minX, maxX, minY, maxY].every((value) => typeof value === "number" && Number.isFinite(value))) {
+      return { minX: minX as number, maxX: maxX as number, minY: minY as number, maxY: maxY as number };
+    }
+  }
+  return undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -555,6 +865,12 @@ async function loggedKeplerFetch(input: RequestInfo | URL, init?: RequestInit): 
   const response = await fetch(input, init);
   console.log(`[kepler] ${method} ${new URL(requestUrl).pathname} -> ${response.status}`);
   return response;
+}
+
+function contentTypeForPath(path: string): string {
+  if (path.endsWith(".css")) return "text/css; charset=UTF-8";
+  if (path.endsWith(".js")) return "application/javascript; charset=UTF-8";
+  return "application/octet-stream";
 }
 
 function summarizeRoute(method: string, path: string, status: number): string {

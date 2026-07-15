@@ -2,3 +2,6 @@
 data/kepler.json
 node_modules
 habitat.sqlite
+data/habitat.sqlite
+data/habitat.sqlite-*
+dist/

@@ -3,6 +3,7 @@ import type {
   ConstructionReadinessReport,
   ConstructionShortage,
   HabitatConstructionJob,
+  HabitatHuman,
   HabitatInventoryState,
   KeplerRegistration,
   HabitatModule,
@@ -387,6 +388,17 @@ export function formatInventoryList(state: HabitatInventoryState): string {
       item.category,
       item.source,
     ]),
+  );
+}
+
+export function formatHumanList(humans: HabitatHuman[]): string {
+  if (humans.length === 0) {
+    return "No humans found.";
+  }
+
+  return renderTextTable(
+    ["ID", "Name", "Assigned Module", "Status"],
+    humans.map((human) => [human.id, human.displayName, human.locationModuleId, human.status]),
   );
 }
 
