@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type {
   HabitatAlert,
   HabitatHuman,
@@ -633,16 +634,27 @@ app.get("/world/scan", async (c) => {
   }
 });
 
-app.get("/", async () => {
-  const file = Bun.file("dist/index.html");
-  return new Response(await file.arrayBuffer(), { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-});
+const dashboardRoutes = new Set(["/", "/dashboard", "/modules", "/weather", "/reports", "/settings"]);
+const dashboardDistDirectory = path.resolve(process.env.HABITAT_DIST_DIRECTORY ?? "dist");
+
+app.get("/", () => serveDashboardEntry());
 
 app.get("/assets/*", async (c) => {
-  const file = Bun.file(`dist/${c.req.path.slice(1)}`);
+  const file = Bun.file(path.join(dashboardDistDirectory, c.req.path.slice(1)));
   if (!(await file.exists())) return c.notFound();
   return new Response(await file.arrayBuffer(), { headers: { "Content-Type": contentTypeForPath(c.req.path) } });
 });
+
+app.get("*", async (c) => {
+  if (!dashboardRoutes.has(c.req.path)) return c.notFound();
+  return serveDashboardEntry();
+});
+
+async function serveDashboardEntry(): Promise<Response> {
+  const file = Bun.file(path.join(dashboardDistDirectory, "index.html"));
+  if (!(await file.exists())) return new Response("Dashboard build is unavailable.\n", { status: 503 });
+  return new Response(file, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+}
 
 const host = process.env.HABITAT_API_HOST ?? "127.0.0.1";
 const port = Number(process.env.HABITAT_API_PORT ?? 8787);
