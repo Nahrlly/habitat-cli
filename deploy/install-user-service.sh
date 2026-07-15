@@ -19,6 +19,21 @@ if [[ ! -f "$CONFIG_DIR/habitat-api.env" ]]; then
 fi
 
 chmod 600 "$CONFIG_DIR/habitat-api.env"
+
+upsert_env() {
+  local key="$1"
+  local value="$2"
+  if grep -qE "^${key}=" "$CONFIG_DIR/habitat-api.env"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_DIR/habitat-api.env"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$CONFIG_DIR/habitat-api.env"
+  fi
+}
+
+upsert_env HABITAT_API_HOST 0.0.0.0
+upsert_env HABITAT_API_PORT 8787
+upsert_env HABITAT_DATA_DIRECTORY "$REPO_DIR/data"
+
 cp "$REPO_DIR/deploy/habitat-api-user.service" "$SYSTEMD_DIR/habitat-api-user.service"
 
 systemctl --user daemon-reload

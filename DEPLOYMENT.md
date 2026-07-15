@@ -65,6 +65,6 @@ cd /home/emi/habitat-cli
 bash deploy/deploy-habitat.sh
 ```
 
-The user service intentionally binds to `127.0.0.1`. To make it reachable through a reverse proxy, keep the proxy on the same server and forward to `http://127.0.0.1:8787`; do not change the browser URL to `0.0.0.0`. The unit and its environment live under `~/.local/share` because this account's `~/.config` directory is administrator-owned.
+The user service binds to `0.0.0.0:8787` to preserve the remote CLI/dashboard workflow. Persistent SQLite state remains in `/home/emi/habitat-cli/data`, so the server CLI and dashboard use the same habitat state. The unit and its environment live under `~/.local/share` because this account's `~/.config` directory is administrator-owned.
 
 For remote access, place a TLS-capable reverse proxy or VPN boundary in front of Hono. Proxy `/` and the API paths to the same upstream origin, expose only the intended hostname, and keep `/etc/habitat/habitat-api.env`, `/var/lib/habitat`, source files, and the Vite development server off the network.
