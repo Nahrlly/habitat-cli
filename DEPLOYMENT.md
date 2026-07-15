@@ -53,8 +53,8 @@ If `/home/emi/habitat-cli/.env` already exists, `deploy/install-user-service.sh`
 
 ```bash
 bash deploy/install-user-service.sh
-systemctl --user is-enabled habitat-api
-systemctl --user is-active habitat-api
+systemctl --user is-enabled habitat-api-user
+systemctl --user is-active habitat-api-user
 bash deploy/smoke-test.sh http://127.0.0.1:8787
 ```
 

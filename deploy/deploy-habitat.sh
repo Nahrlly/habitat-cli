@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-$HOME/habitat-cli}"
-SERVICE_NAME="${SERVICE_NAME:-habitat-api}"
+SERVICE_NAME="${SERVICE_NAME:-habitat-api-user}"
 
 cd "$DEPLOY_DIR"
 git fetch --all --prune

@@ -19,8 +19,8 @@ if [[ ! -f "$CONFIG_DIR/habitat-api.env" ]]; then
 fi
 
 chmod 600 "$CONFIG_DIR/habitat-api.env"
-cp "$REPO_DIR/deploy/habitat-api.user.service" "$SYSTEMD_DIR/habitat-api.service"
+cp "$REPO_DIR/deploy/habitat-api-user.service" "$SYSTEMD_DIR/habitat-api-user.service"
 
 systemctl --user daemon-reload
-systemctl --user enable --now habitat-api.service
+systemctl --user enable --now habitat-api-user.service
 bash "$REPO_DIR/deploy/smoke-test.sh" "http://127.0.0.1:8787"

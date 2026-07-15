@@ -1,0 +1,15 @@
+[Unit]
+Description=Habitat API and dashboard (user service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/habitat-cli
+EnvironmentFile=%h/.local/share/habitat/habitat-api.env
+ExecStart=%h/.bun/bin/bun %h/habitat-cli/src/server.ts
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
