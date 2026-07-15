@@ -29,6 +29,6 @@ systemctl --user restart "$SERVICE_NAME"
 systemctl --user is-active --quiet "$SERVICE_NAME"
 curl --fail --silent --show-error http://127.0.0.1:8787/health >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:8787/ >/dev/null
-deploy/smoke-test.sh http://127.0.0.1:8787
+bash deploy/smoke-test.sh http://127.0.0.1:8787
 
 echo "Habitat deployment is healthy."

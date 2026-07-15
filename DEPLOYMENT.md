@@ -52,17 +52,17 @@ chmod 600 "$HOME/.config/habitat/habitat-api.env"
 If `/home/emi/habitat-cli/.env` already exists, `deploy/install-user-service.sh` copies it into the user-service environment automatically. Otherwise, edit `~/.config/habitat/habitat-api.env` and add the Kepler token before starting the service:
 
 ```bash
-deploy/install-user-service.sh
+bash deploy/install-user-service.sh
 systemctl --user is-enabled habitat-api
 systemctl --user is-active habitat-api
-deploy/smoke-test.sh http://127.0.0.1:8787
+bash deploy/smoke-test.sh http://127.0.0.1:8787
 ```
 
 For later upgrades:
 
 ```bash
 cd /home/emi/habitat-cli
-deploy/deploy-habitat.sh
+bash deploy/deploy-habitat.sh
 ```
 
 The user service intentionally binds to `127.0.0.1`. To make it reachable through a reverse proxy, keep the proxy on the same server and forward to `http://127.0.0.1:8787`; do not change the browser URL to `0.0.0.0`.

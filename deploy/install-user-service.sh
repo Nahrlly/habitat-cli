@@ -23,4 +23,4 @@ cp "$REPO_DIR/deploy/habitat-api.user.service" "$SYSTEMD_DIR/habitat-api.service
 
 systemctl --user daemon-reload
 systemctl --user enable --now habitat-api.service
-"$REPO_DIR/deploy/smoke-test.sh" "http://127.0.0.1:8787"
+bash "$REPO_DIR/deploy/smoke-test.sh" "http://127.0.0.1:8787"
