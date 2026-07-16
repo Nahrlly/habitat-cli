@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { ResourceScan } from "./api";
 import { buildScanPlot, getScanTiles, mergeScanResults } from "./scan-model";
+import { getResourceAsset } from "./resource-assets";
 
 type ScanEvent = { result: ResourceScan; strength: number; radius: number };
 
@@ -63,8 +64,8 @@ export function ScanPopup() {
             <text className="scan-map-coordinate" x={tile.x} y={-tile.y + 0.55} textAnchor="middle">{tile.x},{tile.y}</text>
           </g>)}
         </svg>
-        <div className="scan-map-legend" aria-label="Resource legend">{resources.map((resource) => <span key={resource}><i style={{ background: colorForResource(resource, resources) }} />{resource}</span>)}</div>
-        <table><thead><tr><th>Coordinate</th><th>Resource</th><th>Probability</th><th>Estimate</th></tr></thead><tbody>{plot.tiles.map((tile, index) => <tr key={`${tile.x}-${tile.y}-${index}`}><td>({tile.x}, {tile.y})</td><td>{tile.resourceLabel}</td><td>{tile.probabilityPct}%</td><td>{formatEstimate(tile)}</td></tr>)}</tbody></table>
+        <div className="scan-map-legend" aria-label="Resource legend">{resources.map((resource) => { const asset = getResourceAsset(resource); return <span key={resource}>{asset ? <img src={asset.icon} alt="" /> : <i style={{ background: colorForResource(resource, resources) }} />}{resource}</span>; })}</div>
+        <table><thead><tr><th>Coordinate</th><th>Resource</th><th>Probability</th><th>Estimate</th></tr></thead><tbody>{plot.tiles.map((tile, index) => { const asset = getResourceAsset(tile.resourceLabel); return <tr key={`${tile.x}-${tile.y}-${index}`}><td>({tile.x}, {tile.y})</td><td className="resource-cell">{asset ? <img src={asset.icon} alt="" /> : null}{tile.resourceLabel}</td><td>{tile.probabilityPct}%</td><td>{formatEstimate(tile)}</td></tr>; })}</tbody></table>
       </> : <p className="muted">The scan returned no tiles.</p>}
     </div>
   </div>;
