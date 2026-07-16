@@ -5,6 +5,7 @@ import { type KeplerCatalogBlueprint, type KeplerCatalogResource } from "./keple
 import { addInventoryQuantity, loadInventoryState, setInventoryQuantity } from "./inventory-state.js";
 import { assertModuleCanBeDeleted, listHumans } from "./human-domain.js";
 import { createApiClient, ApiError } from "./api-client.js";
+import { formatClockEvent, formatClockStatus, toClockStatusJson, type HabitatClockEvent } from "./clock-formatters.js";
 import {
   ensureKeplerEnv,
   ensureDefaultModuleRuntimeStatus,
@@ -50,6 +51,7 @@ import type {
   KeplerRegistration,
   KeplerRegistrationResponse,
   KeplerStarterModule,
+  HabitatClockState,
 } from "./types.js";
 
 let apiClient = createApiClient();
@@ -68,7 +70,7 @@ export function createProgram(): Command {
   const program = new Command();
   apiClient = createApiClient();
 
-  program.name("habitat").description("Register this Habitat CLI with Kepler and inspect its status.").version("0.1.0");
+  program.name("habitat").description("Register this Habitat CLI with Kepler and inspect its status.").version("0.1.0").option("--json", "print JSON output where supported");
 
   program
     .command("register")
@@ -220,6 +222,64 @@ export function createProgram(): Command {
   const humanCommand = program.command("human").description("Inspect local Habitat humans.");
   const evaCommand = program.command("eva").description("Manage local EVA exploration.");
   const alertCommand = program.command("alert").description("Manage Habitat operational alerts.");
+  const clockCommand = program.command("clock").description("Manage the local Kepler live clock connection.");
+
+  clockCommand
+    .command("status")
+    .description("Show local Kepler live clock status.")
+    .option("--json", "print stable JSON output")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const status = await apiClient.getJson<HabitatClockState>("/clock/status");
+        console.log(wantsJson(program, options) ? JSON.stringify(toClockStatusJson(status)) : formatClockStatus(status));
+      } catch (error) {
+        console.error(formatApiError(error));
+        process.exitCode = 1;
+      }
+    });
+
+  const listenCommand = clockCommand.command("listen").description("Control Kepler live clock listening.");
+
+  listenCommand
+    .command("on")
+    .description("Enable Kepler live clock listening.")
+    .option("--json", "print stable JSON output")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const status = await apiClient.postJson<HabitatClockState>("/clock/listen/on");
+        console.log(wantsJson(program, options) ? JSON.stringify(toClockStatusJson(status)) : formatClockStatus(status));
+      } catch (error) {
+        console.error(formatApiError(error));
+        process.exitCode = 1;
+      }
+    });
+
+  listenCommand
+    .command("off")
+    .description("Disable Kepler live clock listening.")
+    .option("--json", "print stable JSON output")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const status = await apiClient.postJson<HabitatClockState>("/clock/listen/off");
+        console.log(wantsJson(program, options) ? JSON.stringify(toClockStatusJson(status)) : formatClockStatus(status));
+      } catch (error) {
+        console.error(formatApiError(error));
+        process.exitCode = 1;
+      }
+    });
+
+  clockCommand
+    .command("watch")
+    .description("Watch future Kepler clock events from the local Habitat API.")
+    .option("--json", "print one stable JSON object per event")
+    .action(async (options: { json?: boolean }) => {
+      try {
+        await watchClockEvents(wantsJson(program, options));
+      } catch (error) {
+        console.error(formatApiError(error));
+        process.exitCode = 1;
+      }
+    });
 
   alertCommand.command("list").description("List operational alerts.").action(async () => {
     try { console.log(formatAlertList((await apiClient.getJson<{ alerts: import("./types.js").HabitatAlert[] }>("/alerts")).alerts)); }
@@ -347,7 +407,7 @@ export function createProgram(): Command {
       try {
         const path = `/world/scan?strength=${options.strength}&radius=${options.radius}`;
         const response = await apiClient.getJson<Record<string, unknown>>(path);
-        console.log(options.json ? JSON.stringify(response, null, 2) : formatResourceScan(response));
+        console.log(wantsJson(program, options) ? JSON.stringify(response, null, 2) : formatResourceScan(response));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -1003,6 +1063,105 @@ function parseTickUnit(value: string | undefined): number {
   }
 
   throw new InvalidArgumentError("Tick unit must be seconds or hours.");
+}
+
+function wantsJson(program: Command, options: { json?: boolean }): boolean {
+  return Boolean(options.json || program.opts().json);
+}
+
+async function watchClockEvents(json: boolean): Promise<void> {
+  const controller = new AbortController();
+  const onInterrupt = () => controller.abort();
+  process.once("SIGINT", onInterrupt);
+
+  try {
+    const response = await fetch(new URL("/clock/events", apiClient.baseUrl), {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Clock event stream failed with ${response.status} ${response.statusText}`);
+    }
+    if (!response.body) {
+      throw new Error("Clock event stream returned no body.");
+    }
+
+    await readClockEventStream(response.body, (event) => {
+      console.log(json ? JSON.stringify(event) : formatClockEvent(event));
+    });
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      throw error;
+    }
+  } finally {
+    process.off("SIGINT", onInterrupt);
+  }
+}
+
+async function readClockEventStream(body: ReadableStream<Uint8Array>, onEvent: (event: HabitatClockEvent) => void): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const event = parseClockEventFrame(frame);
+        if (event) onEvent(event);
+      }
+
+      if (done) {
+        const event = parseClockEventFrame(buffer);
+        if (event) onEvent(event);
+        return;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseClockEventFrame(frame: string): HabitatClockEvent | null {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n");
+
+  if (!data) return null;
+
+  try {
+    const value = JSON.parse(data) as Partial<HabitatClockEvent>;
+    const { absoluteTick, advancedBy, issuedAt, receivedAt, applied, error } = value;
+    if (
+      typeof absoluteTick !== "number" || !Number.isInteger(absoluteTick) || absoluteTick < 0 ||
+      typeof advancedBy !== "number" || !Number.isInteger(advancedBy) || advancedBy <= 0 ||
+      typeof issuedAt !== "string" ||
+      (receivedAt !== null && typeof receivedAt !== "string") ||
+      typeof applied !== "boolean" ||
+      (error !== null && typeof error !== "string")
+    ) {
+      return null;
+    }
+
+    return {
+      absoluteTick,
+      advancedBy,
+      issuedAt,
+      receivedAt: receivedAt ?? null,
+      applied,
+      error: error ?? null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function formatApiError(error: unknown): string {
