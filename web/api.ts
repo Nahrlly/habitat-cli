@@ -25,6 +25,9 @@ export type EvaStatus = { deployedHumanId: string | null; x: number; y: number; 
 export type ResourceScanTile = { x: number; y: number; terrain?: string; probabilities?: Array<{ resourceType: string | null; probabilityPct: number }>; topCandidate?: { resourceType: string | null; probabilityPct: number }; quantityEstimate?: { resourceType?: string; estimatedKg?: number; minimumKg?: number; maximumKg?: number } | null };
 export type ResourceScanCoordinate = { x: number; y: number };
 export type ResourceScan = { scan?: { origin?: ResourceScanCoordinate; tiles?: ResourceScanTile[] }; origin?: ResourceScanCoordinate; tiles?: ResourceScanTile[]; [key: string]: unknown };
+import { mergeScanResults } from "./scan-history";
+
+let scanHistory: ResourceScan | null = null;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}) } });
@@ -76,7 +79,7 @@ export const habitatApi = {
   evaStatus: () => request<{ eva: EvaStatus }>("/eva/status"),
   deployEva: (humanId: string) => request<{ eva: EvaStatus }>("/eva/deploy", { method: "POST", body: JSON.stringify({ humanId }) }),
   moveEva: (x: number, y: number) => request<{ eva: EvaStatus }>("/eva/move", { method: "POST", body: JSON.stringify({ x, y }) }),
-  scan: async (strength: number, radius: number) => { const result = await request<ResourceScan>(`/world/scan?strength=${strength}&radius=${radius}`); window.dispatchEvent(new CustomEvent("habitat-scan-result", { detail: { result, strength, radius } })); return result; },
+  scan: async (strength: number, radius: number) => { const result = await request<ResourceScan>(`/world/scan?strength=${strength}&radius=${radius}`); scanHistory = mergeScanResults(scanHistory, result); window.dispatchEvent(new CustomEvent("habitat-scan-result", { detail: { result: scanHistory, strength, radius } })); return scanHistory; },
   collect: (quantityKg: number) => request<Record<string, unknown>>("/world/collect", { method: "POST", body: JSON.stringify({ quantityKg }) }),
   dockEva: () => request<{ eva: EvaStatus }>("/eva/dock", { method: "POST" }),
   module: (selector: string) => request<{ module: Registration["modules"][number]; construction: Record<string, unknown> | null }>(`/modules/${encodeURIComponent(selector)}`),

@@ -1,4 +1,5 @@
 import type { ResourceScan } from "./api";
+export { mergeScanResults } from "./scan-history";
 
 export type ScanTile = NonNullable<ResourceScan["tiles"]>[number];
 export type ScanPlotTile = ScanTile & { resourceLabel: string; probabilityPct: number };
@@ -10,22 +11,6 @@ export function getScanTiles(result: ResourceScan): ScanTile[] {
 
 export function getScanOrigin(result: ResourceScan): { x: number; y: number } {
   return result.scan?.origin ?? result.origin ?? { x: 0, y: 0 };
-}
-
-export function mergeScanResults(previous: ResourceScan | null, next: ResourceScan): ResourceScan {
-  if (!previous) return next;
-  const tiles = new Map(getScanTiles(previous).map((tile) => [`${tile.x},${tile.y}`, tile] as const));
-  for (const tile of getScanTiles(next)) tiles.set(`${tile.x},${tile.y}`, tile);
-  return {
-    ...previous,
-    ...next,
-    scan: {
-      ...previous.scan,
-      ...next.scan,
-      origin: getScanOrigin(next),
-      tiles: [...tiles.values()],
-    },
-  };
 }
 
 export function buildScanPlot(result: ResourceScan): ScanPlot {

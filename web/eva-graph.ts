@@ -1,4 +1,5 @@
 import type { ResourceScan } from "./api";
+import { getScanTiles } from "./scan-model";
 
 export type Coordinate = { x: number; y: number };
 export type EvaGraphPoint = Coordinate & { kind: "origin" | "path" | "explorer" | "resource"; label?: string; detail?: string };
@@ -8,7 +9,7 @@ export function buildEvaPath(current: Coordinate): Coordinate[] {
 }
 
 export function buildResourceMarkers(scan: ResourceScan): EvaGraphPoint[] {
-  return (scan.tiles ?? []).map((tile) => {
+  return getScanTiles(scan).map((tile) => {
     const candidate = tile.topCandidate?.resourceType ?? tile.quantityEstimate?.resourceType ?? "Unknown resource";
     const probability = tile.topCandidate?.probabilityPct;
     const estimate = tile.quantityEstimate?.estimatedKg;
