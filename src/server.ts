@@ -22,7 +22,7 @@ import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.j
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
 import { createOperationalAlert } from "./alerts-domain.js";
-import { addRealtimeClient, broadcastRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot } from "./realtime.js";
+import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot } from "./realtime.js";
 
 export const app = new Hono();
 
@@ -59,12 +59,11 @@ export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> 
 }
 
 export async function broadcastCurrentSnapshot(): Promise<void> {
-  broadcastRealtimeSnapshot(await buildRealtimeSnapshot());
+  await enqueueRealtimeSnapshot(buildRealtimeSnapshot);
 }
 
 async function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>[0]): Promise<void> {
-  const snapshot = await buildRealtimeSnapshot();
-  client.send(JSON.stringify({ type: "snapshot", snapshot, emittedAt: new Date().toISOString() }));
+  await enqueueRealtimeSnapshot(buildRealtimeSnapshot, client);
 }
 
 app.use("*", async (c, next) => {
@@ -127,7 +126,7 @@ app.get("/eva/status", (c) => {
 app.post("/eva/deploy", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { humanId?: string } | null;
   if (!body?.humanId?.trim()) return c.json({ error: "humanId is required." }, 400);
-  try { return c.json({ eva: deployEva(body.humanId.trim()) }); }
+  try { const eva = deployEva(body.humanId.trim()); await broadcastCurrentSnapshot(); return c.json({ eva }); }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
 });
 app.post("/eva/move", async (c) => {
@@ -137,12 +136,14 @@ app.post("/eva/move", async (c) => {
     const registration = loadKeplerRegistration();
     if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
     const sector = await createWorldClient().getCurrentSector(registration.habitatId);
-    return c.json({ eva: moveEva(body!.x!, body!.y!, readSectorBounds(sector)) });
+    const eva = moveEva(body!.x!, body!.y!, readSectorBounds(sector));
+    await broadcastCurrentSnapshot();
+    return c.json({ eva });
   }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
 });
-app.post("/eva/dock", (c) => {
-  try { return c.json({ eva: dockEva() }); }
+app.post("/eva/dock", async (c) => {
+  try { const eva = dockEva(); await broadcastCurrentSnapshot(); return c.json({ eva }); }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
 });
 
@@ -552,6 +553,7 @@ app.post("/world/collect", async (c) => {
       createOperationalAlert({ type: "eva-carrying-capacity-reached", message: `EVA carrying capacity reached (${eva.maxCarryingCapacityKg} kg).`, subject: { type: "human", id: eva.deployedHumanId }, details: { capacityKg: eva.maxCarryingCapacityKg } });
     }
 
+    await broadcastCurrentSnapshot();
     return c.json(collection);
   } catch (error) {
     return friendlyError(c, error);
@@ -775,6 +777,7 @@ app.get("/power/overview", async (c) => {
     const solarIrradiance = await createCatalogClient().getSolarIrradiance();
     const report = applyTickWithSolarIrradiance(registration, 3600, solarIrradiance);
     recordPowerHistory({ recordedAt: new Date().toISOString(), generationKw: report.totalSolarGeneration, consumptionKw: report.totalPowerDraw, netKw: report.totalSolarGeneration - report.totalPowerDraw, modules: registration.modules.map((module) => ({ selector: module.selector, displayName: module.displayName, powerKw: getModulePowerDraw(module) })) });
+    await broadcastCurrentSnapshot();
     return c.json({ generationKw: report.totalSolarGeneration, consumptionKw: report.totalPowerDraw, netKw: report.totalSolarGeneration - report.totalPowerDraw, solarIrradiance });
   } catch (error) {
     return friendlyError(c, error);

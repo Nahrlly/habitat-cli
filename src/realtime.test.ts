@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   addRealtimeClient,
   broadcastRealtimeSnapshot,
+  enqueueRealtimeSnapshot,
   removeRealtimeClient,
   type HabitatRealtimeSnapshot,
 } from "./realtime.js";
@@ -22,6 +23,44 @@ function client(send: (message: string) => void) {
 }
 
 describe("realtime client registry", () => {
+  test("serializes asynchronous snapshots in enqueue order", async () => {
+    const messages: string[] = [];
+    const connected = client((message) => messages.push(message));
+    addRealtimeClient(connected);
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+    const firstQueued = enqueueRealtimeSnapshot(async () => {
+      await first;
+      return { ...snapshot, powerHistory: ["first"] };
+    });
+    const secondQueued = enqueueRealtimeSnapshot(async () => ({ ...snapshot, powerHistory: ["second"] }));
+    releaseFirst();
+    await Promise.all([firstQueued, secondQueued]);
+    removeRealtimeClient(connected);
+
+    expect(messages.map((message) => JSON.parse(message).snapshot.powerHistory)).toEqual([["first"], ["second"]]);
+  });
+
+  test("keeps an initial client snapshot ahead of later broadcasts", async () => {
+    const messages: string[] = [];
+    const connected = client((message) => messages.push(message));
+    addRealtimeClient(connected);
+    let releaseInitial!: () => void;
+    const initialReady = new Promise<void>((resolve) => { releaseInitial = resolve; });
+
+    const initial = enqueueRealtimeSnapshot(async () => {
+      await initialReady;
+      return { ...snapshot, powerHistory: ["initial"] };
+    }, connected);
+    const mutation = enqueueRealtimeSnapshot(async () => ({ ...snapshot, powerHistory: ["mutation"] }));
+    releaseInitial();
+    await Promise.all([initial, mutation]);
+    removeRealtimeClient(connected);
+
+    expect(messages.map((message) => JSON.parse(message).snapshot.powerHistory)).toEqual([["initial"], ["mutation"]]);
+  });
+
   test("broadcasts a normalized snapshot envelope to connected clients", () => {
     const messages: string[] = [];
     const connected = client((message) => messages.push(message));

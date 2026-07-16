@@ -16,6 +16,7 @@ export type HabitatRealtimeEvent =
   | { type: "error"; message: string };
 
 const clients = new Set<ServerWebSocket<unknown>>();
+let snapshotQueue = Promise.resolve();
 
 export function addRealtimeClient(client: ServerWebSocket<unknown>): void {
   clients.add(client);
@@ -40,3 +41,22 @@ export function broadcastRealtimeSnapshot(
   }
 }
 
+export function enqueueRealtimeSnapshot(
+  buildSnapshot: () => Promise<HabitatRealtimeSnapshot>,
+  target?: ServerWebSocket<unknown>,
+): Promise<void> {
+  const delivery = snapshotQueue.then(async () => {
+    const snapshot = await buildSnapshot();
+    const message = JSON.stringify({ type: "snapshot", snapshot, emittedAt: new Date().toISOString() } satisfies HabitatRealtimeEvent);
+    const recipients = target ? [target] : [...clients];
+    for (const client of recipients) {
+      try {
+        client.send(message);
+      } catch {
+        clients.delete(client);
+      }
+    }
+  });
+  snapshotQueue = delivery.catch(() => undefined);
+  return delivery;
+}
