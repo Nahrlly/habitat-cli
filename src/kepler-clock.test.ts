@@ -121,6 +121,24 @@ describe("KeplerClockClient", () => {
     expect(errors.length).toBeGreaterThanOrEqual(2);
   });
 
+  test("accepts the live planet_tick contract using tick and previousTick fields", () => {
+    const ticks: KeplerClockTick[] = [];
+    const client = createClient({ onTick: (tick) => ticks.push(tick) });
+    client.start();
+    const socket = onlySocket();
+    socket.open();
+    socket.message({ type: "hello_ack", habitatId: registration.habitatId, subscriptions: ["ticks"] });
+    socket.message({ type: "planet_tick", previousTick: 800, tick: 900, advancedBy: 100, issuedAt: "2026-07-15T14:30:00.000Z" });
+
+    expect(ticks).toEqual([{
+      type: "planet_tick",
+      previousTick: 800,
+      absoluteTick: 900,
+      advancedBy: 100,
+      issuedAt: "2026-07-15T14:30:00.000Z",
+    }]);
+  });
+
   test("seeds duplicate rejection from the persisted latest absolute tick", () => {
     const ticks: KeplerClockTick[] = [];
     const client = createClient({

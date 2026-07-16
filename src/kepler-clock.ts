@@ -11,7 +11,8 @@ export type KeplerClockSocket = {
 
 export type KeplerClockTick = {
   type: "planet_tick";
-  habitatId: string;
+  habitatId?: string;
+  previousTick?: number;
   absoluteTick: number;
   advancedBy: number;
   issuedAt?: string;
@@ -167,12 +168,13 @@ export class KeplerClockClient {
   }
 
   private handlePlanetTick(payload: JsonRecord): void {
-    if (payload.habitatId !== this.registration.habitatId) {
+    if (payload.habitatId !== undefined && payload.habitatId !== this.registration.habitatId) {
       this.reportError(new Error("Invalid planet_tick habitat identity."));
       return;
     }
 
-    const absoluteTick = payload.absoluteTick;
+    const absoluteTick = payload.absoluteTick ?? payload.tick;
+    const previousTick = payload.previousTick;
     const advancedBy = payload.advancedBy;
     if (!isNonNegativeInteger(absoluteTick) || !isPositiveInteger(advancedBy)) {
       this.reportError(new Error("Invalid planet_tick: absoluteTick must be a whole number and advancedBy must be positive."));
@@ -182,7 +184,8 @@ export class KeplerClockClient {
 
     const tick: KeplerClockTick = {
       type: "planet_tick",
-      habitatId: this.registration.habitatId,
+      ...(typeof payload.habitatId === "string" ? { habitatId: payload.habitatId } : {}),
+      ...(isNonNegativeInteger(previousTick) ? { previousTick } : {}),
       absoluteTick,
       advancedBy,
       ...(typeof payload.issuedAt === "string" ? { issuedAt: payload.issuedAt } : {}),
