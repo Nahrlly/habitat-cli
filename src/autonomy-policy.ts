@@ -1,4 +1,5 @@
-import type { HabitatHuman } from "./types.js";
+import { isLowEVAResource } from "./eva-resource-cost.js";
+import type { HabitatEvaState, HabitatHuman } from "./types.js";
 
 export type AutonomyAction =
   | { type: "deploy"; humanId: string }
@@ -14,6 +15,20 @@ export type AutonomySnapshot = {
 };
 
 export type PolicyDecision = { allowed: boolean; code: string; reason: string };
+
+export type ResourceMissionAction =
+  | { type: "deploy"; humanId: string }
+  | { type: "move"; x: number; y: number }
+  | { type: "scan"; strength: number; radius: number }
+  | { type: "collect"; quantityKg: number }
+  | { type: "dock" };
+
+export type ResourceMissionSnapshot = {
+  registered: boolean;
+  humans: HabitatHuman[];
+  eva: HabitatEvaState;
+  bounds: NonNullable<AutonomySnapshot["bounds"]>;
+};
 
 export function evaluateAction(snapshot: AutonomySnapshot, action: AutonomyAction, cycleId: string): PolicyDecision {
   if (!snapshot.registered || !snapshot.bounds) return blocked("unavailable", "Habitat state is unavailable.");
@@ -41,3 +56,29 @@ export function evaluateAction(snapshot: AutonomySnapshot, action: AutonomyActio
 function allowed(): PolicyDecision { return { allowed: true, code: "allowed", reason: "Action is allowed." }; }
 function blocked(code: string, reason: string): PolicyDecision { return { allowed: false, code, reason }; }
 function isDeployableHumanStatus(status: string): boolean { return status === "idle" || status === "present"; }
+
+export function evaluateResourceMissionAction(snapshot: ResourceMissionSnapshot, action: ResourceMissionAction): PolicyDecision {
+  const base: AutonomySnapshot = {
+    registered: snapshot.registered,
+    humans: snapshot.humans,
+    eva: {
+      deployedHumanId: snapshot.eva.deployedHumanId,
+      x: snapshot.eva.x,
+      y: snapshot.eva.y,
+      carriedKg: snapshot.eva.carriedResources.reduce((total, resource) => total + resource.quantityKg, 0),
+      capacityKg: snapshot.eva.maxCarryingCapacityKg,
+      exhausted: snapshot.eva.exhausted,
+    },
+    bounds: snapshot.bounds,
+  };
+  if (action.type === "deploy" || action.type === "move" || action.type === "collect") return evaluateAction(base, action, "resource-mission");
+  if (!snapshot.eva.deployedHumanId || snapshot.eva.exhausted) return blocked("eva", "EVA must be deployed and operational.");
+  if (action.type === "dock") return snapshot.eva.x === 0 && snapshot.eva.y === 0 ? allowed() : blocked("dock", "EVA can only dock at coordinates (0, 0).");
+  if (!Number.isInteger(action.strength) || action.strength < 0 || action.strength > 100 || !Number.isInteger(action.radius) || action.radius < 0 || action.radius > 5) {
+    return blocked("scan", "Scan strength and radius are outside the supported range.");
+  }
+  if (isLowEVAResource(snapshot.eva.suitBattery, snapshot.eva.maxSuitBattery) || isLowEVAResource(snapshot.eva.suitOxygen, snapshot.eva.maxSuitOxygen)) {
+    return blocked("reserve", "EVA resources are at the mission safety threshold.");
+  }
+  return allowed();
+}

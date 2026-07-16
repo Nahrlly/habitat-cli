@@ -26,8 +26,10 @@ import { createOperationalAlert } from "./alerts-domain.js";
 import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot, type PowerOverviewResponse, type SolarStatusResponse } from "./realtime.js";
 import { ClockEventManager } from "./clock-events.js";
 import { loadClockState } from "./clock-state.js";
+import { createResourceMissionController, type ResourceMissionApi } from "./resource-mission-controller.js";
 
 export const app = new Hono();
+const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi() });
 
 export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> {
   const registration = loadKeplerRegistration();
@@ -198,6 +200,29 @@ app.post("/eva/move", async (c) => {
 app.post("/eva/dock", async (c) => {
   try { const eva = dockEva(); await broadcastCurrentSnapshot(); return c.json({ eva }); }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
+});
+
+app.post("/autonomy/mission/start", async (c) => {
+  try {
+    const mission = await resourceMissionController.start();
+    const { eva } = await resourceMissionController.status();
+    return c.json({ mission, eva }, 202);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+  }
+});
+
+app.get("/autonomy/mission/status", async (c) => c.json(await resourceMissionController.status()));
+
+app.post("/autonomy/mission/stop", async (c) => {
+  const mission = await resourceMissionController.stop();
+  const status = await resourceMissionController.status();
+  return c.json({ ...status, mission: mission ?? status.mission });
+});
+
+app.get("/autonomy/mission/report", (c) => {
+  const report = resourceMissionController.report(c.req.query("missionId"));
+  return report ? c.json({ report }) : c.json({ error: "No resource mission report is available." }, 404);
 });
 
 app.post("/humans", async (c) => {
@@ -1116,6 +1141,34 @@ function createWorldClient() {
   const keplerPlanetToken = process.env.KEPLER_PLANET_TOKEN ?? "";
   ensureKeplerEnv(keplerBaseUrl, keplerPlanetToken);
   return createKeplerWorldClient(keplerBaseUrl, keplerPlanetToken, loggedKeplerFetch);
+}
+
+function createLocalResourceMissionApi(): ResourceMissionApi {
+  return {
+    humans: () => missionRequest("/humans"),
+    evaStatus: () => missionRequest("/eva/status"),
+    bounds: async () => {
+      const sector = await missionRequest<Record<string, unknown>>("/world/sectors/current");
+      const bounds = readSectorBounds(sector);
+      if (!bounds) throw new Error("Current world bounds are unavailable for the resource mission.");
+      return bounds;
+    },
+    deploy: (humanId) => missionRequest("/eva/deploy", { method: "POST", body: JSON.stringify({ humanId }) }),
+    scan: (strength, radius) => missionRequest(`/world/scan?strength=${strength}&radius=${radius}`),
+    collect: (quantityKg) => missionRequest("/world/collect", { method: "POST", body: JSON.stringify({ quantityKg }) }),
+    move: (x, y) => missionRequest("/eva/move", { method: "POST", body: JSON.stringify({ x, y }) }),
+    dock: () => missionRequest("/eva/dock", { method: "POST" }),
+  };
+}
+
+async function missionRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await app.request(`http://habitat.local${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+  });
+  const body = await response.json().catch(() => ({})) as T & { error?: unknown };
+  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `${response.status} ${response.statusText}`);
+  return body;
 }
 
 function ensureStarterModuleRuntimeStatus(module: HabitatModule): HabitatModule {

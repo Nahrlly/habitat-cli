@@ -1,0 +1,94 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createResourceMissionController } from "./resource-mission-controller.js";
+
+const previousDataDirectory = process.env.HABITAT_DATA_DIRECTORY;
+const directories: string[] = [];
+
+afterEach(() => {
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  if (previousDataDirectory === undefined) delete process.env.HABITAT_DATA_DIRECTORY;
+  else process.env.HABITAT_DATA_DIRECTORY = previousDataDirectory;
+});
+
+describe("resource mission controller", () => {
+  test("deploys, scans, collects to capacity, and docks from the origin", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness();
+    const controller = createResourceMissionController({ api: harness.api, delayMs: 0 });
+
+    const mission = await controller.start();
+    await controller.waitForCompletion(mission.id);
+
+    expect(harness.calls).toEqual(["deploy", "scan:50:1", "collect:1", "dock"]);
+    expect(controller.report()).toMatchObject({
+      id: mission.id,
+      status: "completed",
+      stopReason: "capacity-reached",
+      iterations: [
+        { action: "deploy" },
+        { action: "scan" },
+        { action: "collect" },
+        { action: "dock" },
+      ],
+    });
+  });
+
+  test("stops resource work at the battery threshold and returns cardinally before docking", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ x: 2, y: -1, deployedHumanId: "human-1", suitBattery: 25 });
+    const controller = createResourceMissionController({ api: harness.api, delayMs: 0 });
+    const mission = await controller.resumeActiveMission({ id: "mission-1", humanId: "human-1" });
+    await controller.waitForCompletion(mission.id);
+
+    expect(harness.calls).toEqual(["move:1:-1", "move:0:-1", "move:0:0", "dock"]);
+    expect(controller.report()).toMatchObject({ status: "completed", stopReason: "low-battery" });
+  });
+
+  test("requests a safe stop without allowing another resource action", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ x: 1, y: 0, deployedHumanId: "human-1" });
+    const controller = createResourceMissionController({ api: harness.api, delayMs: 5 });
+    const mission = await controller.resumeActiveMission({ id: "mission-1", humanId: "human-1" });
+    await controller.stop();
+    await controller.waitForCompletion(mission.id);
+
+    expect(harness.calls).toEqual(["move:0:0", "dock"]);
+    expect(controller.report()).toMatchObject({ status: "completed", stopReason: "operator-requested" });
+  });
+});
+
+function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number }> = {}) {
+  const calls: string[] = [];
+  const eva = {
+    deployedHumanId: initial.deployedHumanId ?? null,
+    x: initial.x ?? 0,
+    y: initial.y ?? 0,
+    carriedResources: initial.carriedKg ? [{ resourceId: "ice", quantityKg: initial.carriedKg }] : [],
+    maxCarryingCapacityKg: 1,
+    suitBattery: initial.suitBattery ?? 100,
+    maxSuitBattery: 100,
+    suitOxygen: initial.suitOxygen ?? 100,
+    maxSuitOxygen: 100,
+    exhausted: false,
+  };
+  const api = {
+    humans: async () => ({ humans: [{ id: "human-1", displayName: "Ada", locationModuleId: "basic-suitport", status: "present" }] }),
+    evaStatus: async () => ({ eva: { ...eva, carriedResources: eva.carriedResources.map((resource) => ({ ...resource })) } }),
+    bounds: async () => ({ minX: -2, maxX: 2, minY: -2, maxY: 2 }),
+    deploy: async (humanId: string) => { calls.push("deploy"); eva.deployedHumanId = humanId; },
+    scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); return { scan: { tiles: [] } }; },
+    collect: async (quantityKg: number) => { calls.push(`collect:${quantityKg}`); eva.carriedResources = [{ resourceId: "ice", quantityKg }]; return { resourceId: "ice", quantityKg }; },
+    move: async (x: number, y: number) => { calls.push(`move:${x}:${y}`); eva.x = x; eva.y = y; },
+    dock: async () => { calls.push("dock"); eva.deployedHumanId = null; },
+  };
+  return { api, calls };
+}
+
+function useTemporaryDatabase(): void {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "habitat-resource-controller-"));
+  directories.push(directory);
+  process.env.HABITAT_DATA_DIRECTORY = directory;
+}

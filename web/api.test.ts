@@ -93,4 +93,28 @@ describe("dashboard REST bootstrap", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("uses the local mission endpoint shapes", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ path: string; method: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ path: new URL(String(input), "http://localhost:8787").pathname, method: init?.method ?? "GET" });
+      return new Response(JSON.stringify({ mission: null, eva: null, report: null }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    try {
+      await habitatApi.startResourceMission();
+      await habitatApi.resourceMissionStatus();
+      await habitatApi.stopResourceMission();
+      await habitatApi.resourceMissionReport();
+      expect(requests).toEqual([
+        { path: "/autonomy/mission/start", method: "POST" },
+        { path: "/autonomy/mission/status", method: "GET" },
+        { path: "/autonomy/mission/stop", method: "POST" },
+        { path: "/autonomy/mission/report", method: "GET" },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -233,6 +233,13 @@ export function loadResourceMissionReport(missionId: string): ResourceMissionRep
   });
 }
 
+export function loadLatestResourceMissionReport(): ResourceMissionReport | null {
+  return withDatabase((db) => {
+    const row = db.query(resourceMissionSelect("ORDER BY started_at DESC LIMIT 1")).get() as ResourceMissionRow | null;
+    return row ? loadResourceMissionReport(row.id) : null;
+  });
+}
+
 function resourceMissionSelect(whereClause: string): string {
   return `SELECT
     id, human_id AS humanId, status, current_action AS currentAction, stop_reason AS stopReason,
