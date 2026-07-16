@@ -1,4 +1,4 @@
-import type { HabitatRealtimeSnapshot } from "./api";
+import type { ClockStatus, HabitatRealtimeSnapshot } from "./api";
 
 export type RealtimeConnectionState = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -84,6 +84,19 @@ function isRegistration(value: unknown): boolean {
     && value.modules.every(isModule);
 }
 
+function isClockStatus(value: unknown): value is ClockStatus {
+  if (!isRecord(value)) return false;
+  return (value.mode === "manual" || value.mode === "kepler")
+    && typeof value.listening === "boolean"
+    && typeof value.manualTicksAllowed === "boolean"
+    && (value.connectionStatus === "disconnected" || value.connectionStatus === "connecting" || value.connectionStatus === "connected" || value.connectionStatus === "error")
+    && (value.latestAbsoluteTick === null || typeof value.latestAbsoluteTick === "number")
+    && (value.latestAdvancedBy === null || typeof value.latestAdvancedBy === "number")
+    && (value.lastConnectionAt === null || typeof value.lastConnectionAt === "string")
+    && (value.lastMessageAt === null || typeof value.lastMessageAt === "string")
+    && (value.latestError === null || typeof value.latestError === "string");
+}
+
 export function isHabitatRealtimeSnapshot(value: unknown): value is HabitatRealtimeSnapshot {
   if (!isRecord(value)) return false;
   return (value.registration === null || isRegistration(value.registration))
@@ -96,7 +109,8 @@ export function isHabitatRealtimeSnapshot(value: unknown): value is HabitatRealt
     && Array.isArray(value.powerHistory)
     && value.powerHistory.every(isPowerHistoryPoint)
     && Array.isArray(value.alerts)
-    && value.alerts.every(isRecord);
+    && value.alerts.every(isRecord)
+    && (value.clock === undefined || value.clock === null || isClockStatus(value.clock));
 }
 
 export type HabitatRealtimeEvent = {

@@ -62,6 +62,28 @@ describe("dashboard realtime client", () => {
     expect(parseRealtimeEvent(JSON.stringify({ type: "error", message: "nope" }))).toBeNull();
   });
 
+  test("accepts optional local clock state in a realtime snapshot", () => {
+    const event = parseRealtimeEvent(JSON.stringify({
+      type: "snapshot",
+      snapshot: {
+        ...snapshot(),
+        clock: {
+          mode: "kepler",
+          listening: true,
+          manualTicksAllowed: false,
+          connectionStatus: "connected",
+          latestAbsoluteTick: 42,
+          latestAdvancedBy: 1,
+          lastConnectionAt: null,
+          lastMessageAt: null,
+          latestError: null,
+        },
+      },
+      emittedAt: "2026-07-16T00:00:00.000Z",
+    }));
+    expect(event?.snapshot.clock?.latestAbsoluteTick).toBe(42);
+  });
+
   test("delivers valid snapshots and reports connection states", () => {
     FakeSocket.instances = [];
     const states: RealtimeConnectionState[] = [];

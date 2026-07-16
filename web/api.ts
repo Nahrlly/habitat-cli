@@ -7,7 +7,18 @@ export type Registration = {
 export type SolarStatus = { solarIrradiance: { wPerM2: number; condition?: string } };
 export type PowerOverview = SolarStatus & { generationKw: number; consumptionKw: number; netKw: number };
 export type PowerHistoryPoint = { recordedAt: string; generationKw: number; consumptionKw: number; netKw: number; modules: Array<{ selector: string; displayName: string; powerKw: number }> };
-export type HabitatRealtimeSnapshot = { registration: Registration | null; modules: Registration["modules"]; humans: Human[]; solar: SolarStatus | null; power: PowerOverview | null; powerHistory: PowerHistoryPoint[]; alerts: Array<Record<string, unknown>> };
+export type ClockStatus = {
+  mode: "manual" | "kepler";
+  listening: boolean;
+  manualTicksAllowed: boolean;
+  connectionStatus: "disconnected" | "connecting" | "connected" | "error";
+  latestAbsoluteTick: number | null;
+  latestAdvancedBy: number | null;
+  lastConnectionAt: string | null;
+  lastMessageAt: string | null;
+  latestError: string | null;
+};
+export type HabitatRealtimeSnapshot = { registration: Registration | null; modules: Registration["modules"]; humans: Human[]; solar: SolarStatus | null; power: PowerOverview | null; powerHistory: PowerHistoryPoint[]; alerts: Array<Record<string, unknown>>; clock?: ClockStatus | null };
 export type Human = { id: string; displayName: string; locationModuleId: string; status: string };
 export type EvaResource = { resourceId: string; quantityKg: number };
 export type EvaStatus = { deployedHumanId: string | null; x: number; y: number; carriedResources: EvaResource[]; maxCarryingCapacityKg: number; suitBattery: number; maxSuitBattery: number; suitOxygen: number; maxSuitOxygen: number; estimatedTicksRemaining: number; exhausted: boolean };
@@ -33,8 +44,9 @@ export async function loadDashboardSnapshot(): Promise<HabitatRealtimeSnapshot> 
     habitatApi.power(),
     habitatApi.powerHistory(),
     habitatApi.alerts(),
+    habitatApi.clockStatus(),
   ]);
-  const [registrationResult, modulesResult, humansResult, solarResult, powerResult, historyResult, alertsResult] = results;
+  const [registrationResult, modulesResult, humansResult, solarResult, powerResult, historyResult, alertsResult, clockResult] = results;
   const fulfilled = results.filter((result): result is PromiseFulfilledResult<unknown> => result.status === "fulfilled");
   if (!fulfilled.length && !results.some((result) => result.status === "rejected" && isNotRegistered(result.reason))) {
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -50,6 +62,7 @@ export async function loadDashboardSnapshot(): Promise<HabitatRealtimeSnapshot> 
     power: powerResult.status === "fulfilled" ? powerResult.value : null,
     powerHistory: historyResult.status === "fulfilled" ? historyResult.value.history : [],
     alerts: alertsResult.status === "fulfilled" ? alertsResult.value.alerts ?? [] : [],
+    clock: clockResult.status === "fulfilled" ? clockResult.value : null,
   };
 }
 
@@ -68,6 +81,9 @@ export const habitatApi = {
   solar: () => request<SolarStatus>("/solar/status"),
   power: () => request<PowerOverview>("/power/overview"),
   powerHistory: (limit = 120) => request<{ history: PowerHistoryPoint[] }>(`/power/history?limit=${limit}`),
+  clockStatus: () => request<ClockStatus>("/clock/status"),
+  listenToClock: () => request<ClockStatus>("/clock/listen/on", { method: "POST" }),
+  stopClock: () => request<ClockStatus>("/clock/listen/off", { method: "POST" }),
   setModuleStatus: (selector: string, status: string) => request<{ module: Registration["modules"][number] }>(`/modules/${encodeURIComponent(selector)}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
   tick: (ticks: number) => request<{ registration: Registration }>("/commands/tick", { method: "POST", body: JSON.stringify({ ticks }) }),
   register: (name: string) => request<{ registration: Registration }>("/commands/register", { method: "POST", body: JSON.stringify({ name }) }),
