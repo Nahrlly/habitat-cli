@@ -116,9 +116,32 @@ describe("resource mission controller", () => {
     expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:1", "move:0:0", "dock"]);
     expect(controller.report()).toMatchObject({ status: "completed", stopReason: "capacity-reached" });
   });
+
+  test("offers a scan-informed batch quantity to the planner", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ maxCarryingCapacityKg: 4, scanEstimateKg: 4 });
+    let planCalls = 0;
+    const controller = createResourceMissionController({
+      api: harness.api,
+      delayMs: 0,
+      plan: async ({ legalActions }) => {
+        planCalls += 1;
+        if (planCalls === 1) return [{ type: "deploy", humanId: "human-1" }, { type: "scan", strength: 50, radius: 1 }];
+        if (planCalls === 2) return [{ type: "move", x: 1, y: 0 }];
+        expect(legalActions).toContainEqual({ type: "collect", quantityKg: 4 });
+        return [{ type: "collect", quantityKg: 4 }];
+      },
+    });
+
+    const mission = await controller.start();
+    await controller.waitForCompletion(mission.id);
+
+    expect(planCalls).toBe(3);
+    expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:4", "move:0:0", "dock"]);
+  });
 });
 
-function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number; boundsFailureAt: { x: number; y: number } }> = {}) {
+function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number; boundsFailureAt: { x: number; y: number }; scanEstimateKg: number }> = {}) {
   const calls: string[] = [];
   const eva = {
     deployedHumanId: initial.deployedHumanId ?? null,
@@ -137,7 +160,7 @@ function createHarness(initial: Partial<{ deployedHumanId: string | null; x: num
     evaStatus: async () => ({ eva: { ...eva, carriedResources: eva.carriedResources.map((resource) => ({ ...resource })) } }),
     bounds: async () => { if (initial.boundsFailureAt && eva.x === initial.boundsFailureAt.x && eva.y === initial.boundsFailureAt.y) throw new Error("temporary bounds failure"); return { minX: -2, maxX: 2, minY: -2, maxY: 2 }; },
     deploy: async (humanId: string) => { calls.push("deploy"); eva.deployedHumanId = humanId; },
-    scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); return { scan: { tiles: [] } }; },
+    scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); return { scan: { tiles: initial.scanEstimateKg ? [{ x: 1, y: 0, topCandidate: { resourceType: "ice" }, quantityEstimate: { estimatedKg: initial.scanEstimateKg } }] : [] } }; },
     collect: async (quantityKg: number) => { calls.push(`collect:${quantityKg}`); const current = eva.carriedResources[0]?.quantityKg ?? 0; eva.carriedResources = [{ resourceId: "ice", quantityKg: current + quantityKg }]; return { resourceId: "ice", quantityKg }; },
     move: async (x: number, y: number) => { calls.push(`move:${x}:${y}`); eva.x = x; eva.y = y; },
     dock: async () => { calls.push("dock"); eva.deployedHumanId = null; },

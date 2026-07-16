@@ -262,11 +262,28 @@ function missionActions(mission: ResourceMission, snapshot: ResourceMissionSnaps
       .find(([x, y]) => x >= snapshot.bounds.minX && x <= snapshot.bounds.maxX && y >= snapshot.bounds.minY && y <= snapshot.bounds.maxY);
     return fallback ? [{ type: "move", x: fallback[0], y: fallback[1] }] : [{ type: "scan", strength: DEFAULT_SCAN_STRENGTH, radius: DEFAULT_SCAN_RADIUS }];
   }
-  if (previousAction === "move") return [{ type: "collect", quantityKg: 1 }];
+  if (previousAction === "move") return collectionActions(iterations, snapshot);
   return [{ type: "scan", strength: DEFAULT_SCAN_STRENGTH, radius: DEFAULT_SCAN_RADIUS }];
 }
 
-function nearestScannedResource(scan: Record<string, unknown> | null | undefined, x: number, y: number): { x: number; y: number } | null {
+function collectionActions(iterations: ResourceMissionIteration[], snapshot: ResourceMissionSnapshot): ResourceMissionAction[] {
+  const carriedKg = snapshot.eva.carriedResources.reduce((total, resource) => total + resource.quantityKg, 0);
+  const remainingKg = Math.max(1, snapshot.eva.maxCarryingCapacityKg - carriedKg);
+  const latestScan = [...iterations].reverse().find((iteration) => iteration.action === "scan");
+  const target = scannedResourceAt(latestScan?.scan, snapshot.eva.x, snapshot.eva.y);
+  const preferred = target?.estimatedKg ? Math.min(remainingKg, target.estimatedKg) : 1;
+  return [...new Set([preferred, 1])].map((quantityKg) => ({ type: "collect", quantityKg }));
+}
+
+function scannedResourceAt(scan: Record<string, unknown> | null | undefined, x: number, y: number): { estimatedKg?: number } | null {
+  const payload = isRecord(scan?.scan) ? scan.scan : scan;
+  const tiles = Array.isArray(payload?.tiles) ? payload.tiles : [];
+  const tile = tiles.find((candidate) => isRecord(candidate) && candidate.x === x && candidate.y === y && isRecord(candidate.quantityEstimate));
+  if (!isRecord(tile) || !isRecord(tile.quantityEstimate)) return null;
+  return typeof tile.quantityEstimate.estimatedKg === "number" ? { estimatedKg: Math.max(1, Math.floor(tile.quantityEstimate.estimatedKg)) } : {};
+}
+
+function nearestScannedResource(scan: Record<string, unknown> | null | undefined, x: number, y: number): { x: number; y: number; estimatedKg?: number } | null {
   const payload = isRecord(scan?.scan) ? scan.scan : scan;
   const tiles = Array.isArray(payload?.tiles) ? payload.tiles : [];
   const candidates = tiles
@@ -275,7 +292,9 @@ function nearestScannedResource(scan: Record<string, unknown> | null | undefined
     .filter((tile) => isRecord(tile.quantityEstimate) && typeof tile.topCandidate === "object" && tile.topCandidate !== null && typeof (tile.topCandidate as Record<string, unknown>).resourceType === "string")
     .sort((left, right) => Number((right.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0) - Number((left.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0));
   const target = candidates[0];
-  return target && typeof target.x === "number" && typeof target.y === "number" ? { x: target.x, y: target.y } : null;
+  if (!target || typeof target.x !== "number" || typeof target.y !== "number") return null;
+  const estimatedKg = isRecord(target.quantityEstimate) && typeof target.quantityEstimate.estimatedKg === "number" ? Math.max(1, Math.floor(target.quantityEstimate.estimatedKg)) : undefined;
+  return { x: target.x, y: target.y, ...(estimatedKg === undefined ? {} : { estimatedKg }) };
 }
 
 function resourceStopReason(mission: ResourceMission, snapshot: ResourceMissionSnapshot): ResourceMissionStopReason | null {
