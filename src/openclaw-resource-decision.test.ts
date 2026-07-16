@@ -36,4 +36,12 @@ describe("OpenClaw resource decision", () => {
     const plan = createOpenClawResourcePlanner({ maxPlanSteps: 2, runAgent: async () => JSON.stringify({ status: "ok", result: { finalAssistantVisibleText: '[{"type":"dock"},{"type":"scan","strength":50,"radius":1},{"type":"collect","quantityKg":1}]' } }) });
     await expect(plan(context)).rejects.toThrow("bounded trip plan");
   });
+
+  test("accepts a JSON plan wrapped in a fenced response", async () => {
+    const plan = createOpenClawResourcePlanner({ runAgent: async () => JSON.stringify({ status: "ok", result: { finalAssistantVisibleText: '```json\n{"plan":[{"type":"scan","strength":50,"radius":1},{"type":"collect","quantityKg":5}]}\n```' } }) });
+    await expect(plan(context)).resolves.toEqual([
+      { type: "scan", strength: 50, radius: 1 },
+      { type: "collect", quantityKg: 5 },
+    ]);
+  });
 });

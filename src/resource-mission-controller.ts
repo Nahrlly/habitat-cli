@@ -52,6 +52,7 @@ export function createResourceMissionController(input: {
   decide?: (context: ResourceMissionDecisionContext) => Promise<ResourceMissionAction>;
   plan?: ResourceMissionPlanner;
   maxPlanSteps?: number;
+  fallbackPlanOnError?: boolean;
   delayMs?: number;
 }): ResourceMissionController {
   const loops = new Map<string, Promise<void>>();
@@ -147,10 +148,16 @@ export function createResourceMissionController(input: {
           recentIterations: (loadResourceMissionReport(mission.id)?.iterations ?? []).slice(-8),
         });
       } catch (error) {
-        return finishAfterReturn(mission, "dependency-failure", "failed", errorMessage(error));
+        const planningError = errorMessage(error);
+        appendResourceMissionIteration({ missionId, action: "plan", error: planningError });
+        if (!input.fallbackPlanOnError) return finishAfterReturn(mission, "dependency-failure", "failed", planningError);
+        actions = [legalActions[0]!];
       }
       if (!actions.length || actions.length > maxPlanSteps) {
-        return finishAfterReturn(mission, "no-safe-action", "completed", "Decision bridge returned an invalid trip plan.");
+        const planningError = "Decision bridge returned an invalid trip plan.";
+        appendResourceMissionIteration({ missionId, action: "plan", error: planningError });
+        if (!input.fallbackPlanOnError) return finishAfterReturn(mission, "no-safe-action", "completed", planningError);
+        actions = [legalActions[0]!];
       }
 
       for (const action of actions) {

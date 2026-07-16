@@ -91,12 +91,33 @@ function parseOpenClawAction(raw: string): ResourceMissionAction {
 function parseOpenClawPlan(raw: string, maxPlanSteps: number): ResourceMissionAction[] {
   const text = extractAssistantText(raw);
   try {
-    const plan = JSON.parse(text);
+    const parsed = parseJsonResponse(text);
+    const plan = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.plan) ? parsed.plan : null;
     if (!Array.isArray(plan) || plan.length === 0 || plan.length > maxPlanSteps || plan.some((action) => action && typeof action === "object" && action.type === "dock")) throw new Error();
     return plan.map(parseActionValue);
   } catch {
     throw new Error("OpenClaw returned an invalid bounded trip plan.");
   }
+}
+
+function parseJsonResponse(text: string): unknown {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const candidates = [trimmed];
+  const arrayStart = trimmed.indexOf("[");
+  const arrayEnd = trimmed.lastIndexOf("]");
+  if (arrayStart >= 0 && arrayEnd > arrayStart) candidates.push(trimmed.slice(arrayStart, arrayEnd + 1));
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(trimmed.slice(objectStart, objectEnd + 1));
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      return typeof parsed === "string" ? JSON.parse(parsed) : parsed;
+    } catch {
+      // Try the next bounded JSON candidate.
+    }
+  }
+  throw new Error("OpenClaw returned invalid JSON.");
 }
 
 function extractAssistantText(raw: string): string {

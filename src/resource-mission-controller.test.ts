@@ -99,6 +99,23 @@ describe("resource mission controller", () => {
     expect(harness.calls).toEqual(["deploy", "move:1:0", "move:0:0", "dock"]);
     expect(controller.report()).toMatchObject({ status: "failed", stopReason: "dependency-failure", finalEvaSnapshot: { deployedHumanId: null, x: 0, y: 0 } });
   });
+
+  test("uses Habitat's safe next action when the planner is unavailable", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness();
+    const controller = createResourceMissionController({
+      api: harness.api,
+      delayMs: 0,
+      fallbackPlanOnError: true,
+      plan: async () => { throw new Error("OpenClaw unavailable"); },
+    });
+
+    const mission = await controller.start();
+    await controller.waitForCompletion(mission.id);
+
+    expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:1", "move:0:0", "dock"]);
+    expect(controller.report()).toMatchObject({ status: "completed", stopReason: "capacity-reached" });
+  });
 });
 
 function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number; boundsFailureAt: { x: number; y: number } }> = {}) {

@@ -31,7 +31,7 @@ import { loadActiveResourceMission } from "./resource-mission-state.js";
 import { createOpenClawResourcePlanner } from "./openclaw-resource-decision.js";
 
 export const app = new Hono();
-const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi(), plan: createOpenClawResourcePlanner() });
+const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi(), plan: createOpenClawResourcePlanner(), fallbackPlanOnError: true });
 
 export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> {
   const registration = loadKeplerRegistration();
