@@ -3,9 +3,14 @@ import type { HabitatEvaState } from "./types.js";
 import { createOperationalAlert } from "./alerts-domain.js";
 
 const DEFAULT_CAPACITY_KG = 20;
+export const SUIT_BATTERY_CAPACITY = 100;
+export const SUIT_OXYGEN_CAPACITY = 100;
+export const SUIT_BATTERY_PER_TICK = 1;
+export const SUIT_OXYGEN_PER_TICK = 1;
+export const SUIT_LOW_THRESHOLD = 0.25;
 
 export function getEvaStatus(): HabitatEvaState {
-  return loadEvaState() ?? { deployedHumanId: null, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity() };
+  return loadEvaState() ?? { deployedHumanId: null, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: 0, exhausted: false };
 }
 
 export type EvaSectorBounds = { minX: number; maxX: number; minY: number; maxY: number };
@@ -24,7 +29,7 @@ export function deployEva(humanId: string): HabitatEvaState {
   }
   const current = getEvaStatus();
   if (current.deployedHumanId && current.deployedHumanId !== humanId) throw new Error(`EVA is already deployed by human ${current.deployedHumanId}.`);
-  const next = { ...current, deployedHumanId: humanId, maxCarryingCapacityKg: getSuitportCapacity() };
+  const next = { ...current, deployedHumanId: humanId, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: SUIT_BATTERY_CAPACITY, exhausted: false };
   saveEvaState(next);
   createOperationalAlert({ type: "human-deployed-outside", message: `${human.displayName} is deployed outside the habitat.`, subject: { type: "human", id: human.id }, details: { x: next.x, y: next.y } });
   return next;
@@ -33,6 +38,7 @@ export function deployEva(humanId: string): HabitatEvaState {
 export function moveEva(x: number, y: number, bounds?: EvaSectorBounds): HabitatEvaState {
   const current = getEvaStatus();
   if (!current.deployedHumanId) throw new Error("EVA is not deployed.");
+  if (current.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
   const dx = Math.abs(x - current.x);
   const dy = Math.abs(y - current.y);
   if (dx + dy !== 1) throw new Error("EVA moves must be exactly one tile north, south, east, or west.");
@@ -47,6 +53,7 @@ export function moveEva(x: number, y: number, bounds?: EvaSectorBounds): Habitat
 export function dockEva(): HabitatEvaState {
   const current = getEvaStatus();
   if (!current.deployedHumanId) throw new Error("EVA is not deployed.");
+  if (current.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
   if (current.x !== 0 || current.y !== 0) throw new Error("EVA can only dock at coordinates (0, 0).");
   const registration = requireRegistration();
   const suitport = findSuitport(registration.modules);

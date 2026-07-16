@@ -408,6 +408,9 @@ export function formatEvaStatus(state: HabitatEvaState): string {
     `Deployed human: ${state.deployedHumanId ?? "none"}`,
     `Position: ${state.x},${state.y}`,
     `Carrying: ${state.carriedResources.reduce((total, resource) => total + resource.quantityKg, 0)} / ${state.maxCarryingCapacityKg} kg`,
+    `Suit battery: ${state.suitBattery} / ${state.maxSuitBattery} (consumes ${state.batteryConsumptionPerTick}/tick)`,
+    `Suit oxygen: ${state.suitOxygen} / ${state.maxSuitOxygen} (consumes ${state.oxygenConsumptionPerTick}/tick)`,
+    `Estimated ticks remaining: ${state.estimatedTicksRemaining}${state.exhausted ? " (EXHAUSTED: human did not return in time)" : ""}`,
   ];
   if (state.carriedResources.length === 0) {
     lines.push("Carried resources: none");

@@ -158,6 +158,14 @@ export type HabitatEvaState = {
   y: number;
   carriedResources: HabitatCarriedResource[];
   maxCarryingCapacityKg: number;
+  suitBattery: number;
+  maxSuitBattery: number;
+  suitOxygen: number;
+  maxSuitOxygen: number;
+  batteryConsumptionPerTick: number;
+  oxygenConsumptionPerTick: number;
+  estimatedTicksRemaining: number;
+  exhausted: boolean;
 };
 
 export type HabitatAlert = {

@@ -127,8 +127,16 @@ function initializeSchema(db: Database): void {
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
     carried_resources_json TEXT NOT NULL,
-    max_carrying_capacity_kg REAL NOT NULL
+    max_carrying_capacity_kg REAL NOT NULL,
+    suit_battery REAL NOT NULL DEFAULT 100,
+    max_suit_battery REAL NOT NULL DEFAULT 100,
+    suit_oxygen REAL NOT NULL DEFAULT 100,
+    max_suit_oxygen REAL NOT NULL DEFAULT 100
   );`);
+  ensureColumn(db, "eva_state", "suit_battery", "REAL NOT NULL DEFAULT 100");
+  ensureColumn(db, "eva_state", "max_suit_battery", "REAL NOT NULL DEFAULT 100");
+  ensureColumn(db, "eva_state", "suit_oxygen", "REAL NOT NULL DEFAULT 100");
+  ensureColumn(db, "eva_state", "max_suit_oxygen", "REAL NOT NULL DEFAULT 100");
   db.run(`CREATE TABLE IF NOT EXISTS power_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recorded_at TEXT NOT NULL,

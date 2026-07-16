@@ -17,7 +17,7 @@ import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
 import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { assertModuleCanBeDeleted, createHuman, deleteHuman, listHumans, moveHuman, updateHuman } from "./human-domain.js";
-import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds } from "./eva-domain.js";
+import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds, SUIT_BATTERY_PER_TICK, SUIT_OXYGEN_PER_TICK } from "./eva-domain.js";
 import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
@@ -454,6 +454,7 @@ app.post("/world/collect", async (c) => {
     if (!eva?.deployedHumanId) {
       return c.json({ error: "EVA is not deployed; deploy a human before collecting." }, 409);
     }
+    if (eva.exhausted) return c.json({ error: "EVA is exhausted: the human did not return in time." }, 409);
     if (typeof body?.quantityKg !== "number" || !Number.isSafeInteger(body.quantityKg) || body.quantityKg <= 0) {
       return c.json({ error: "quantity-kg must be a positive whole number." }, 400);
     }
@@ -608,7 +609,19 @@ app.post("/commands/tick", async (c) => {
     const construction = advanceConstruction(body!.ticks!);
     const completedModule = construction.completedJob ? createConstructedModule(report.registration, construction.completedJob) : null;
     const persistedRegistration = completedModule ? { ...report.registration, modules: [...report.registration.modules, completedModule] } : report.registration;
-    saveState(persistedRegistration);
+    const eva = getEvaStatus();
+    if (eva.deployedHumanId && !eva.exhausted) {
+      const suitBattery = Math.max(0, eva.suitBattery - body!.ticks! * SUIT_BATTERY_PER_TICK);
+      const suitOxygen = Math.max(0, eva.suitOxygen - body!.ticks! * SUIT_OXYGEN_PER_TICK);
+      const exhausted = suitBattery <= 0 || suitOxygen <= 0;
+      const nextEva = { ...eva, suitBattery, suitOxygen, estimatedTicksRemaining: Math.min(Math.ceil(suitBattery / SUIT_BATTERY_PER_TICK), Math.ceil(suitOxygen / SUIT_OXYGEN_PER_TICK)), exhausted };
+      const alerts = [...persistedRegistration.alerts];
+      if ((suitBattery <= eva.maxSuitBattery * 0.25 || suitOxygen <= eva.maxSuitOxygen * 0.25) && !alerts.some((alert) => alert.id === `eva-low-${eva.deployedHumanId}`)) alerts.push({ id: `eva-low-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-low", severity: "warning", status: "open", source: "habitat-local", message: `EVA suit resources are low: battery ${suitBattery}/${eva.maxSuitBattery}, oxygen ${suitOxygen}/${eva.maxSuitOxygen}.`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
+      if (exhausted && !alerts.some((alert) => alert.id === `eva-exhausted-${eva.deployedHumanId}`)) alerts.push({ id: `eva-exhausted-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-exhausted", severity: "critical", status: "open", source: "habitat-local", message: "EVA exhausted: the human did not return in time.", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
+      saveState({ ...persistedRegistration, alerts }, nextEva);
+    } else {
+      saveState(persistedRegistration);
+    }
     return c.json({ ticks: body!.ticks, registration: persistedRegistration, construction, completedModule, totalPowerDraw: report.totalPowerDraw, totalSolarGeneration: report.totalSolarGeneration, batteryBefore: report.batteryBefore, batteryAfter: report.batteryAfter, solarChargeReason: report.solarChargeReason });
   } catch (error) {
     return friendlyError(c, error);
@@ -715,6 +728,7 @@ app.get("/world/scan", async (c) => {
     try {
       const eva = loadEvaState();
       if (!eva?.deployedHumanId) throw new Error("EVA is not deployed; deploy a human before scanning.");
+      if (eva.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
       x = eva.x;
       y = eva.y;
       sensorStrength = parseIntegerQuery(query.strength ?? query.sensorStrength, "sensor strength");

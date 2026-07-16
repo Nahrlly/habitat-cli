@@ -119,14 +119,16 @@ export function clearLocalHabitatState(): void {
 export function loadEvaState(): HabitatEvaState | null {
   ensureDataDirectory();
   return withDatabase((db) => {
-    const row = db.query(`SELECT deployed_human_id AS deployedHumanId, x, y, carried_resources_json AS carriedResourcesJson, max_carrying_capacity_kg AS maxCarryingCapacityKg FROM eva_state WHERE id = 1`).get() as { deployedHumanId: string | null; x: number; y: number; carriedResourcesJson: string; maxCarryingCapacityKg: number } | undefined;
-    return row ? { deployedHumanId: row.deployedHumanId, x: row.x, y: row.y, carriedResources: JSON.parse(row.carriedResourcesJson), maxCarryingCapacityKg: row.maxCarryingCapacityKg } : null;
+    const row = db.query(`SELECT *, deployed_human_id AS deployedHumanId, carried_resources_json AS carriedResourcesJson, max_carrying_capacity_kg AS maxCarryingCapacityKg FROM eva_state WHERE id = 1`).get() as any;
+    if (!row) return null;
+    const battery = row.suit_battery ?? 100, oxygen = row.suit_oxygen ?? 100;
+    return { deployedHumanId: row.deployedHumanId, x: row.x, y: row.y, carriedResources: JSON.parse(row.carriedResourcesJson), maxCarryingCapacityKg: row.maxCarryingCapacityKg, suitBattery: battery, maxSuitBattery: row.max_suit_battery ?? 100, suitOxygen: oxygen, maxSuitOxygen: row.max_suit_oxygen ?? 100, batteryConsumptionPerTick: 1, oxygenConsumptionPerTick: 1, estimatedTicksRemaining: Math.min(Math.ceil(battery), Math.ceil(oxygen)), exhausted: row.deployedHumanId !== null && (battery <= 0 || oxygen <= 0) };
   });
 }
 
 export function saveEvaState(state: HabitatEvaState): void {
   ensureDataDirectory();
-  withDatabase((db) => db.query(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg`).run(state.deployedHumanId, state.x, state.y, JSON.stringify(state.carriedResources), state.maxCarryingCapacityKg));
+  withDatabase((db) => db.query(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg, suit_battery, max_suit_battery, suit_oxygen, max_suit_oxygen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg, suit_battery=excluded.suit_battery, max_suit_battery=excluded.max_suit_battery, suit_oxygen=excluded.suit_oxygen, max_suit_oxygen=excluded.max_suit_oxygen`).run(state.deployedHumanId, state.x, state.y, JSON.stringify(state.carriedResources), state.maxCarryingCapacityKg, state.suitBattery, state.maxSuitBattery, state.suitOxygen, state.maxSuitOxygen));
 }
 
 export function dockEvaStateAtomically(
@@ -141,6 +143,14 @@ export function dockEvaStateAtomically(
     y: 0,
     carriedResources: [],
     maxCarryingCapacityKg: loadEvaState()?.maxCarryingCapacityKg ?? 20,
+    suitBattery: 100,
+    maxSuitBattery: 100,
+    suitOxygen: 100,
+    maxSuitOxygen: 100,
+    batteryConsumptionPerTick: 1,
+    oxygenConsumptionPerTick: 1,
+    estimatedTicksRemaining: 0,
+    exhausted: false,
   };
 
   return withDatabase((db) => db.transaction(() => {
@@ -365,7 +375,7 @@ export function loadStateOrFail(): KeplerRegistration {
   return registration;
 }
 
-export function saveState(registration: KeplerRegistration): void {
+export function saveState(registration: KeplerRegistration, evaState?: HabitatEvaState): void {
   validateRegistrationPersistence(registration);
   withDatabase((db) => {
     db.transaction(() => {
@@ -431,6 +441,9 @@ export function saveState(registration: KeplerRegistration): void {
           JSON.stringify(module.runtimeAttributes),
           JSON.stringify(module.capabilities),
         );
+      }
+      if (evaState) {
+        db.run(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg, suit_battery, max_suit_battery, suit_oxygen, max_suit_oxygen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg, suit_battery=excluded.suit_battery, max_suit_battery=excluded.max_suit_battery, suit_oxygen=excluded.suit_oxygen, max_suit_oxygen=excluded.max_suit_oxygen`, evaState.deployedHumanId, evaState.x, evaState.y, JSON.stringify(evaState.carriedResources), evaState.maxCarryingCapacityKg, evaState.suitBattery, evaState.maxSuitBattery, evaState.suitOxygen, evaState.maxSuitOxygen);
       }
     })();
   });
