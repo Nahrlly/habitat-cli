@@ -68,3 +68,37 @@ bash deploy/deploy-habitat.sh
 The user service binds to `0.0.0.0:8787` to preserve the remote CLI/dashboard workflow. Persistent SQLite state remains in `/home/emi/habitat-cli/data`, so the server CLI and dashboard use the same habitat state. The unit and its environment live under `~/.local/share` because this account's `~/.config` directory is administrator-owned.
 
 For remote access, place a TLS-capable reverse proxy or VPN boundary in front of Hono. Proxy `/` and the API paths to the same upstream origin, expose only the intended hostname, and keep `/etc/habitat/habitat-api.env`, `/var/lib/habitat`, source files, and the Vite development server off the network.
+
+### WebSocket dashboard migration
+
+The dashboard uses the same-origin WebSocket endpoint `/ws`. A page loaded over `http://` connects with `ws://`; a page loaded over `https://` connects with `wss://`. No separate WebSocket host is needed.
+
+The reverse proxy must forward WebSocket upgrades to the Hono service. Preserve the `Upgrade` and `Connection` headers, for example in an Nginx location:
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+After changing the checkout or service configuration, restart the persistent user service:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart habitat-api-user
+systemctl --user is-active habitat-api-user
+```
+
+Verify the WebSocket endpoint from the server or through the reverse-proxy URL:
+
+```bash
+bash deploy/smoke-test.sh http://127.0.0.1:8787
+bash deploy/smoke-test.sh https://habitat.example.com
+```
+
+The smoke test checks that `/ws` accepts the upgrade and sends an initial JSON snapshot. The dashboard reconnects automatically after a dropped connection and retains REST bootstrap/fallback behavior while the socket is unavailable.
+
+Known limitation: path-prefixed reverse-proxy deployments are unsupported. `/ws` must be reachable at the origin root; use a dedicated hostname or root-path proxy mapping rather than exposing the dashboard below a URL prefix.
