@@ -53,17 +53,17 @@ describe("realtime client registry", () => {
 });
 
 describe("dashboard WebSocket endpoint", () => {
-  test("broadcastCurrentSnapshot sends the persisted current snapshot", () => {
+  test("broadcastCurrentSnapshot sends the persisted current snapshot", async () => {
     const messages: string[] = [];
     const connected = client((message) => messages.push(message));
     addRealtimeClient(connected);
 
-    broadcastCurrentSnapshot();
+    await broadcastCurrentSnapshot();
     removeRealtimeClient(connected);
 
     const event = JSON.parse(messages[0]!);
     expect(event.type).toBe("snapshot");
-    expect(event.snapshot).toEqual(buildRealtimeSnapshot());
+    expect(event.snapshot).toEqual(await buildRealtimeSnapshot());
   });
 
   test("rejects a non-upgrade request with an upgrade-required response", async () => {
@@ -73,8 +73,20 @@ describe("dashboard WebSocket endpoint", () => {
     expect(await response.text()).toBe("WebSocket upgrade required.");
   });
 
-  test("builds an unregistered snapshot without requiring a habitat", () => {
-    const snapshot = buildRealtimeSnapshot();
+  test("includes current solar status in the realtime snapshot", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ wPerM2: 321 }), { status: 200 })) as typeof fetch;
+
+    try {
+      const snapshot = await buildRealtimeSnapshot();
+      expect(snapshot.solar).toEqual({ solarIrradiance: { wPerM2: 321 } });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("builds an unregistered snapshot without requiring a habitat", async () => {
+    const snapshot = await buildRealtimeSnapshot();
     expect(snapshot.registration === null || typeof snapshot.registration === "object").toBe(true);
     expect(Array.isArray(snapshot.modules)).toBe(true);
     expect(Array.isArray(snapshot.humans)).toBe(true);

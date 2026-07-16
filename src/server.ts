@@ -10,7 +10,7 @@ import type {
   KeplerRegistrationResponse,
   KeplerStarterModule,
 } from "./types.js";
-import { loadKeplerRegistration, setModuleStatus } from "./state.js";
+import { getModuleStatusOptions, loadKeplerRegistration, setModuleStatus } from "./state.js";
 import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, loadEvaState, saveEvaState, saveState } from "./state.js";
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
@@ -26,25 +26,44 @@ import { addRealtimeClient, broadcastRealtimeSnapshot, removeRealtimeClient, typ
 
 export const app = new Hono();
 
-export function buildRealtimeSnapshot(): HabitatRealtimeSnapshot {
+export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> {
   const registration = loadKeplerRegistration();
+  let solar: unknown = null;
+  let power: unknown = null;
+
+  try {
+    const solarIrradiance = await createCatalogClient().getSolarIrradiance();
+    solar = { solarIrradiance };
+    if (registration) {
+      const report = applyTickWithSolarIrradiance(registration, 3600, solarIrradiance);
+      power = {
+        generationKw: report.totalSolarGeneration,
+        consumptionKw: report.totalPowerDraw,
+        netKw: report.totalSolarGeneration - report.totalPowerDraw,
+        solarIrradiance,
+      };
+    }
+  } catch {
+    // Realtime delivery remains available when the external irradiance service is unavailable.
+  }
+
   return {
     registration,
     modules: registration?.modules ?? [],
     humans: listHumans(),
-    solar: null,
-    power: null,
+    solar,
+    power,
     powerHistory: loadPowerHistory(),
     alerts: registration?.alerts ?? [],
   };
 }
 
-export function broadcastCurrentSnapshot(): void {
-  broadcastRealtimeSnapshot(buildRealtimeSnapshot());
+export async function broadcastCurrentSnapshot(): Promise<void> {
+  broadcastRealtimeSnapshot(await buildRealtimeSnapshot());
 }
 
-function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>[0]): void {
-  const snapshot = buildRealtimeSnapshot();
+async function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>[0]): Promise<void> {
+  const snapshot = await buildRealtimeSnapshot();
   client.send(JSON.stringify({ type: "snapshot", snapshot, emittedAt: new Date().toISOString() }));
 }
 
@@ -90,7 +109,7 @@ app.get("/modules", (c) => {
     return c.json({ error: "Habitat is not registered." }, 404);
   }
 
-  return c.json({ modules: registration.modules });
+  return c.json({ modules: registration.modules.map((module) => ({ ...module, statusOptions: getModuleStatusOptions(module) })) });
 });
 
 app.get("/humans", (c) => {
@@ -427,6 +446,10 @@ app.patch("/modules/:selector/status", async (c) => {
   const validStatuses = new Set(["offline", "idle", "online", "active", "damaged"]);
   if (!validStatuses.has(body.status)) {
     return c.json({ error: "status must be offline, idle, online, active, or damaged." }, 400);
+  }
+
+  if (!getModuleStatusOptions(currentModule).includes(body.status)) {
+    return c.json({ error: `${currentModule.displayName} does not support manual status ${body.status}.` }, 400);
   }
 
   const nextRegistration = setModuleStatus(registration, currentModule.id, body.status);
