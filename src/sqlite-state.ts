@@ -166,6 +166,32 @@ function initializeSchema(db: Database): void {
     net_kw REAL NOT NULL,
     modules_json TEXT NOT NULL
   );`);
+  db.run(`CREATE TABLE IF NOT EXISTS resource_missions (
+    id TEXT PRIMARY KEY,
+    human_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    active_key TEXT UNIQUE,
+    current_action TEXT,
+    stop_reason TEXT,
+    error TEXT,
+    final_eva_json TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS resource_mission_iterations (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES resource_missions(id),
+    sequence INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    action_input_json TEXT NOT NULL,
+    scan_json TEXT,
+    collected_resources_json TEXT NOT NULL,
+    error TEXT,
+    eva_snapshot_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (mission_id, sequence)
+  );`);
 }
 
 function ensureColumn(db: Database, tableName: string, columnName: string, definition: string): void {
