@@ -22,7 +22,7 @@ import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.j
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
 import { createOperationalAlert } from "./alerts-domain.js";
-import { addRealtimeClient, removeRealtimeClient, type HabitatRealtimeSnapshot } from "./realtime.js";
+import { addRealtimeClient, broadcastRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot } from "./realtime.js";
 
 export const app = new Hono();
 
@@ -37,6 +37,10 @@ export function buildRealtimeSnapshot(): HabitatRealtimeSnapshot {
     powerHistory: loadPowerHistory(),
     alerts: registration?.alerts ?? [],
   };
+}
+
+export function broadcastCurrentSnapshot(): void {
+  broadcastRealtimeSnapshot(buildRealtimeSnapshot());
 }
 
 function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>[0]): void {
@@ -130,7 +134,9 @@ app.post("/humans", async (c) => {
   }
 
   try {
-    return c.json({ human: createHuman(body.displayName, body.locationModuleId) }, 201);
+    const human = createHuman(body.displayName, body.locationModuleId);
+    broadcastCurrentSnapshot();
+    return c.json({ human }, 201);
   } catch (error) {
     return c.json({ error: (error as Error).message }, 404);
   }
@@ -139,7 +145,9 @@ app.post("/humans", async (c) => {
 app.patch("/humans/:id", async (c) => {
   const body = (await c.req.json().catch(() => null)) as Partial<Pick<HabitatHuman, "displayName" | "locationModuleId" | "status">> | null;
   try {
-    return c.json({ human: updateHuman(c.req.param("id"), body ?? {}) });
+    const human = updateHuman(c.req.param("id"), body ?? {});
+    broadcastCurrentSnapshot();
+    return c.json({ human });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 404);
   }
@@ -148,6 +156,7 @@ app.patch("/humans/:id", async (c) => {
 app.delete("/humans/:id", (c) => {
   try {
     deleteHuman(c.req.param("id"));
+    broadcastCurrentSnapshot();
     return c.json({ ok: true });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 404);
@@ -162,6 +171,7 @@ app.post("/humans/:id/move", async (c) => {
 
   try {
     const human = moveHuman(c.req.param("id"), body.moduleId.trim());
+    broadcastCurrentSnapshot();
     const module = loadKeplerRegistration()?.modules.find((entry) => entry.id === human.locationModuleId);
     return c.json({ human, moduleSelector: module?.selector ?? human.locationModuleId });
   } catch (error) {
@@ -208,6 +218,7 @@ app.post("/alerts", async (c) => {
   };
 
   saveState({ ...registration, alerts: [...registration.alerts, alert] });
+  broadcastCurrentSnapshot();
   return c.json({ alert }, 201);
 });
 
@@ -242,6 +253,7 @@ app.patch("/alerts/:id", async (c) => {
     ...registration,
     alerts: registration.alerts.map((alert) => (alert.id === nextAlert.id ? nextAlert : alert)),
   });
+  broadcastCurrentSnapshot();
 
   return c.json({ alert: nextAlert });
 });
@@ -259,6 +271,7 @@ app.delete("/alerts/:id", (c) => {
   }
 
   saveState({ ...registration, alerts: nextAlerts });
+  broadcastCurrentSnapshot();
   return c.json({ ok: true });
 });
 
@@ -325,6 +338,7 @@ app.post("/modules", async (c) => {
   });
 
   saveState({ ...registration, modules: [...registration.modules, module] });
+  broadcastCurrentSnapshot();
   return c.json({ module }, 201);
 });
 
@@ -361,6 +375,7 @@ app.patch("/modules/:selector", async (c) => {
     ...registration,
     modules: registration.modules.map((module) => (module.id === currentModule.id ? nextModule : module)),
   });
+  broadcastCurrentSnapshot();
 
   return c.json({ module: nextModule });
 });
@@ -387,6 +402,7 @@ app.delete("/modules/:selector", (c) => {
     ...registration,
     modules: registration.modules.filter((module) => module.id !== currentModule.id),
   });
+  broadcastCurrentSnapshot();
 
   return c.json({ ok: true });
 });
@@ -415,6 +431,7 @@ app.patch("/modules/:selector/status", async (c) => {
 
   const nextRegistration = setModuleStatus(registration, currentModule.id, body.status);
   saveState(nextRegistration);
+  broadcastCurrentSnapshot();
 
   return c.json({ module: nextRegistration.modules.find((module) => module.id === currentModule.id), modules: nextRegistration.modules });
 });
@@ -440,6 +457,8 @@ app.post("/inventory/set", async (c) => {
     category: body.category,
   });
 
+  broadcastCurrentSnapshot();
+
   return c.json({ item });
 });
 
@@ -459,6 +478,8 @@ app.post("/inventory/add", async (c) => {
     unit: body.unit,
     category: body.category,
   });
+
+  broadcastCurrentSnapshot();
 
   return c.json({ item });
 });
@@ -593,6 +614,7 @@ app.post("/commands/register", async (c) => {
 
     const registration = await registerWithKepler(name);
     saveState(registration);
+    broadcastCurrentSnapshot();
 
     return c.json({ registration });
   } catch (error) {
@@ -610,6 +632,7 @@ app.post("/commands/unregister", async (c) => {
 
     await unregisterFromKepler(registration.habitatId);
     clearPowerHistory();
+    broadcastCurrentSnapshot();
     return c.json({ ok: true });
   } catch (error) {
     return friendlyError(c, error);
@@ -643,6 +666,7 @@ app.post("/commands/tick", async (c) => {
     } else {
       saveState(persistedRegistration);
     }
+    broadcastCurrentSnapshot();
     return c.json({ ticks: body!.ticks, registration: persistedRegistration, construction, completedModule, totalPowerDraw: report.totalPowerDraw, totalSolarGeneration: report.totalSolarGeneration, batteryBefore: report.batteryBefore, batteryAfter: report.batteryAfter, solarChargeReason: report.solarChargeReason });
   } catch (error) {
     return friendlyError(c, error);
@@ -660,8 +684,10 @@ app.post("/commands/construct", async (c) => {
     const completedModule = createConstructedModule(registration, result.startedJob);
     saveState({ ...registration, modules: [...registration.modules, completedModule] });
     saveConstructionState({ activeJob: null });
+    broadcastCurrentSnapshot();
     return c.json({ ...result, completedModule });
   }
+  if (result.startedJob) broadcastCurrentSnapshot();
   return c.json(result);
 });
 
@@ -674,6 +700,7 @@ app.post("/construction/cancel", async (c) => {
   if (!selector) return c.json({ error: "No active construction job to cancel." }, 409);
   const result = cancelConstruction(selector);
   if (!result.canceledJob) return c.json({ error: `No active construction job matches ${selector}.` }, 404);
+  broadcastCurrentSnapshot();
   return c.json({ canceledJob: result.canceledJob });
 });
 
