@@ -13,6 +13,11 @@ describe("autonomy policy", () => {
     expect(evaluateAction(baseSnapshot, { type: "deploy", humanId: "h1" }, "cycle-1")).toEqual({ allowed: true, code: "allowed", reason: "Action is allowed." });
   });
 
+  test("allows a present human deployment", () => {
+    const snapshot = { ...baseSnapshot, humans: [{ ...baseSnapshot.humans[0], status: "present" }] };
+    expect(evaluateAction(snapshot, { type: "deploy", humanId: "h1" }, "cycle-1").allowed).toBe(true);
+  });
+
   test("blocks collection over carrying capacity", () => {
     const snapshot = { ...baseSnapshot, eva: { ...baseSnapshot.eva, deployedHumanId: "h1", carriedKg: 19, capacityKg: 20 } };
     expect(evaluateAction(snapshot, { type: "collect", quantityKg: 2 }, "cycle-1").code).toBe("capacity");

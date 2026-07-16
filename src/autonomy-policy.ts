@@ -23,7 +23,7 @@ export function evaluateAction(snapshot: AutonomySnapshot, action: AutonomyActio
     const human = snapshot.humans.find((candidate) => candidate.id === action.humanId);
     if (!human) return blocked("human", `Human not found: ${action.humanId}.`);
     if (snapshot.eva.deployedHumanId) return blocked("deployed", "EVA is already deployed.");
-    if (human.status !== "idle") return blocked("human-status", "Selected human is not idle.");
+    if (!isDeployableHumanStatus(human.status)) return blocked("human-status", "Selected human is not available for deployment.");
     return allowed();
   }
   if (snapshot.eva.exhausted || !snapshot.eva.deployedHumanId) return blocked("eva", "EVA must be deployed and operational.");
@@ -40,3 +40,4 @@ export function evaluateAction(snapshot: AutonomySnapshot, action: AutonomyActio
 
 function allowed(): PolicyDecision { return { allowed: true, code: "allowed", reason: "Action is allowed." }; }
 function blocked(code: string, reason: string): PolicyDecision { return { allowed: false, code, reason }; }
+function isDeployableHumanStatus(status: string): boolean { return status === "idle" || status === "present"; }
