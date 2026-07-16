@@ -53,8 +53,12 @@ let apiClient = createApiClient();
 let keplerBaseUrl = "";
 let keplerPlanetToken = "";
 
-function remoteModeEnabled(): boolean {
-  return process.env.HABITAT_REMOTE_MODE === "1";
+export function remoteModeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.HABITAT_REMOTE_MODE === "0") {
+    return false;
+  }
+
+  return env.HABITAT_REMOTE_MODE === "1" || Boolean(env.HABITAT_API_BASE_URL?.trim());
 }
 
 export function createProgram(): Command {
