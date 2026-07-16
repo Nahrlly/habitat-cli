@@ -28,6 +28,8 @@ export type ResourceMissionReport = ResourceMission & { iterations: Array<{ sequ
 export type ResourceScanTile = { x: number; y: number; terrain?: string; probabilities?: Array<{ resourceType: string | null; probabilityPct: number }>; topCandidate?: { resourceType: string | null; probabilityPct: number }; quantityEstimate?: { resourceType?: string; estimatedKg?: number; minimumKg?: number; maximumKg?: number } | null };
 export type ResourceScanCoordinate = { x: number; y: number };
 export type ResourceScan = { scan?: { origin?: ResourceScanCoordinate; tiles?: ResourceScanTile[] }; origin?: ResourceScanCoordinate; tiles?: ResourceScanTile[]; [key: string]: unknown };
+export type Blueprint = { blueprintId: string; displayName: string; description?: string; inputs?: Record<string, unknown>; output?: Record<string, unknown>; productionCost?: Record<string, unknown>; requiredFacility?: Record<string, unknown>; buildTicks?: number; prerequisites?: string[]; unlocks?: string[]; repeatable?: boolean; level?: number | null; runtimeAttributes?: Record<string, unknown>; capabilities?: string[] };
+export type InventoryItem = { resourceId: string; displayName?: string; quantity: number; unit?: string };
 import { mergeScanResults } from "./scan-history";
 
 let scanHistory: ResourceScan | null = null;
@@ -89,6 +91,9 @@ export const habitatApi = {
   resourceMissionStatus: () => request<ResourceMissionStatus>("/autonomy/mission/status"),
   stopResourceMission: () => request<ResourceMissionStatus>("/autonomy/mission/stop", { method: "POST" }),
   resourceMissionReport: () => request<{ report: ResourceMissionReport }>("/autonomy/mission/report"),
+  blueprints: () => request<{ blueprints: Blueprint[] }>("/catalog/blueprints"),
+  inventory: () => request<{ inventory: { items: InventoryItem[] } }>("/inventory"),
+  constructBlueprint: (blueprintId: string) => request<Record<string, unknown>>("/commands/construct", { method: "POST", body: JSON.stringify({ blueprintId }) }),
   module: (selector: string) => request<{ module: Registration["modules"][number]; construction: Record<string, unknown> | null }>(`/modules/${encodeURIComponent(selector)}`),
   solar: () => request<SolarStatus>("/solar/status"),
   power: () => request<PowerOverview>("/power/overview"),
