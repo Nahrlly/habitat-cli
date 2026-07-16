@@ -22,7 +22,8 @@ export type HabitatRealtimeSnapshot = { registration: Registration | null; modul
 export type Human = { id: string; displayName: string; locationModuleId: string; status: string };
 export type EvaResource = { resourceId: string; quantityKg: number };
 export type EvaStatus = { deployedHumanId: string | null; x: number; y: number; carriedResources: EvaResource[]; maxCarryingCapacityKg: number; suitBattery: number; maxSuitBattery: number; suitOxygen: number; maxSuitOxygen: number; estimatedTicksRemaining: number; exhausted: boolean };
-export type ResourceScan = { tiles?: Array<{ x: number; y: number; terrain?: string; probabilities?: Array<{ resourceType: string | null; probabilityPct: number }>; topCandidate?: { resourceType: string | null; probabilityPct: number }; quantityEstimate?: { resourceType?: string; estimatedKg?: number; minimumKg?: number; maximumKg?: number } | null }>; [key: string]: unknown };
+export type ResourceScanTile = { x: number; y: number; terrain?: string; probabilities?: Array<{ resourceType: string | null; probabilityPct: number }>; topCandidate?: { resourceType: string | null; probabilityPct: number }; quantityEstimate?: { resourceType?: string; estimatedKg?: number; minimumKg?: number; maximumKg?: number } | null };
+export type ResourceScan = { scan?: { tiles?: ResourceScanTile[] }; tiles?: ResourceScanTile[]; [key: string]: unknown };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}) } });
