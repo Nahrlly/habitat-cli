@@ -83,9 +83,25 @@ describe("resource mission controller", () => {
     expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:3", "move:0:0", "collect:2", "dock"]);
     expect(controller.report()).toMatchObject({ status: "completed", stopReason: "capacity-reached" });
   });
+
+  test("returns and docks when bounds telemetry fails after EVA leaves origin", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ boundsFailureAt: { x: 1, y: 0 } });
+    const controller = createResourceMissionController({
+      api: harness.api,
+      delayMs: 0,
+      plan: async () => [{ type: "deploy", humanId: "human-1" }, { type: "move", x: 1, y: 0 }],
+    });
+
+    const mission = await controller.start();
+    await controller.waitForCompletion(mission.id);
+
+    expect(harness.calls).toEqual(["deploy", "move:1:0", "move:0:0", "dock"]);
+    expect(controller.report()).toMatchObject({ status: "failed", stopReason: "dependency-failure", finalEvaSnapshot: { deployedHumanId: null, x: 0, y: 0 } });
+  });
 });
 
-function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number }> = {}) {
+function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number; boundsFailureAt: { x: number; y: number } }> = {}) {
   const calls: string[] = [];
   const eva = {
     deployedHumanId: initial.deployedHumanId ?? null,
@@ -102,7 +118,7 @@ function createHarness(initial: Partial<{ deployedHumanId: string | null; x: num
   const api = {
     humans: async () => ({ humans: [{ id: "human-1", displayName: "Ada", locationModuleId: "basic-suitport", status: "present" }] }),
     evaStatus: async () => ({ eva: { ...eva, carriedResources: eva.carriedResources.map((resource) => ({ ...resource })) } }),
-    bounds: async () => ({ minX: -2, maxX: 2, minY: -2, maxY: 2 }),
+    bounds: async () => { if (initial.boundsFailureAt && eva.x === initial.boundsFailureAt.x && eva.y === initial.boundsFailureAt.y) throw new Error("temporary bounds failure"); return { minX: -2, maxX: 2, minY: -2, maxY: 2 }; },
     deploy: async (humanId: string) => { calls.push("deploy"); eva.deployedHumanId = humanId; },
     scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); return { scan: { tiles: [] } }; },
     collect: async (quantityKg: number) => { calls.push(`collect:${quantityKg}`); const current = eva.carriedResources[0]?.quantityKg ?? 0; eva.carriedResources = [{ resourceId: "ice", quantityKg: current + quantityKg }]; return { resourceId: "ice", quantityKg }; },

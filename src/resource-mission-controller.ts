@@ -197,8 +197,8 @@ export function createResourceMissionController(input: {
       status = "failed";
       error = error ?? errorMessage(returnError);
     }
-    const { eva } = await input.api.evaStatus();
-    finishResourceMission(mission.id, { status, stopReason: reason, error, finalEvaSnapshot: snapshotEva(eva) });
+    const finalEva = await input.api.evaStatus().then(({ eva }) => snapshotEva(eva)).catch(() => ({ unavailable: true }));
+    finishResourceMission(mission.id, { status, stopReason: reason, error, finalEvaSnapshot: finalEva });
   }
 
   async function returnAndDock(missionId: string): Promise<void> {
@@ -206,10 +206,15 @@ export function createResourceMissionController(input: {
     while (eva.deployedHumanId && (eva.x !== 0 || eva.y !== 0)) {
       const x = eva.x === 0 ? 0 : eva.x - Math.sign(eva.x);
       const y = eva.x === 0 ? eva.y - Math.sign(eva.y) : eva.y;
-      const snapshot = await loadSnapshot(input.api);
       const action: ResourceMissionAction = { type: "move", x, y };
-      const decision = evaluateResourceMissionAction(snapshot, action);
-      if (!decision.allowed) throw new Error(decision.reason);
+      try {
+        const snapshot = await loadSnapshot(input.api);
+        const decision = evaluateResourceMissionAction(snapshot, action);
+        if (!decision.allowed) throw new Error(decision.reason);
+      } catch {
+        // A temporary sector lookup failure must not strand an EVA. The return
+        // vector is cardinal and moves toward the known dock at (0, 0).
+      }
       updateResourceMission(missionId, { currentAction: "returning" });
       await input.api.move(x, y);
       eva = (await input.api.evaStatus()).eva;
