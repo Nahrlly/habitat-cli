@@ -530,12 +530,7 @@ export function createProgram(): Command {
         try {
           const registration = await apiClient.getJson<KeplerRegistration>("/registration");
           const power = await apiClient.getJson<{ generationKw: number; consumptionKw: number; netKw: number; solarIrradiance: { wPerM2: number; condition?: string } }>("/power/overview");
-          console.log(`Generation: ${power.generationKw.toFixed(2)} kW.`);
-          console.log(`Consumption: ${power.consumptionKw.toFixed(2)} kW.`);
-          console.log(`Net: ${power.netKw.toFixed(2)} kW.`);
-          const batteries = registration.modules.filter((module) => module.capabilities.includes("power-storage"));
-          const charge = batteries.reduce((total, module) => total + Number(module.runtimeAttributes.currentEnergyKwh ?? module.runtimeAttributes.energyKwh ?? 0), 0);
-          console.log(`Battery charge: ${charge.toFixed(1)} kWh.`);
+          console.log(formatPowerOverview(registration, power.solarIrradiance));
           return;
         } catch {
           // Preserve local CLI behavior when no API server is available.
