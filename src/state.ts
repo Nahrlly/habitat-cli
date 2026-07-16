@@ -131,6 +131,14 @@ export function saveEvaState(state: HabitatEvaState): void {
   withDatabase((db) => db.query(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg, suit_battery, max_suit_battery, suit_oxygen, max_suit_oxygen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg, suit_battery=excluded.suit_battery, max_suit_battery=excluded.max_suit_battery, suit_oxygen=excluded.suit_oxygen, max_suit_oxygen=excluded.max_suit_oxygen`).run(state.deployedHumanId, state.x, state.y, JSON.stringify(state.carriedResources), state.maxCarryingCapacityKg, state.suitBattery, state.maxSuitBattery, state.suitOxygen, state.maxSuitOxygen));
 }
 
+export function consumeEvaBatteryAtomically(cost: number): void {
+  const boundedCost = Number.isFinite(cost) ? Math.max(0, cost) : 0;
+  ensureDataDirectory();
+  withDatabase((db) => db.transaction(() => {
+    db.query("UPDATE eva_state SET suit_battery = MAX(0, suit_battery - ?) WHERE id = 1").run(boundedCost);
+  })());
+}
+
 export function dockEvaStateAtomically(
   humanId: string,
   suitportModuleId: string,

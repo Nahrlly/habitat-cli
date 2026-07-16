@@ -40,7 +40,7 @@ export function deployEva(humanId: string): HabitatEvaState {
   }
   const current = getEvaStatus();
   if (current.deployedHumanId && current.deployedHumanId !== humanId) throw new Error(`EVA is already deployed by human ${current.deployedHumanId}.`);
-  const next = { ...current, deployedHumanId: humanId, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: SUIT_BATTERY_CAPACITY, exhausted: false };
+  const next = { ...current, deployedHumanId: humanId, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: Math.min(Math.ceil(SUIT_BATTERY_CAPACITY / SUIT_BATTERY_PER_TICK), Math.ceil(SUIT_OXYGEN_CAPACITY / SUIT_OXYGEN_PER_TICK)), exhausted: false };
   saveEvaState(next);
   createOperationalAlert({ type: "human-deployed-outside", message: `${human.displayName} is deployed outside the habitat.`, subject: { type: "human", id: human.id }, details: { x: next.x, y: next.y } });
   return next;

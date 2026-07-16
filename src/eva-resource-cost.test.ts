@@ -38,4 +38,5 @@ describe("EVA resource economics", () => {
     expect(estimateReturnReserve(eva, 4)).toEqual({ oxygen: 1, power: 1 });
     expect(estimateReturnReserve(eva, -4)).toEqual({ oxygen: 0, power: 0 });
   });
+
 });

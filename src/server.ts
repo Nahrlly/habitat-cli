@@ -11,7 +11,7 @@ import type {
   KeplerStarterModule,
 } from "./types.js";
 import { getModuleStatusOptions, loadKeplerRegistration, setModuleStatus } from "./state.js";
-import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, loadEvaState, saveEvaState, saveState } from "./state.js";
+import { clearLocalHabitatState, consumeEvaBatteryAtomically, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, loadEvaState, saveEvaState, saveState } from "./state.js";
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
@@ -928,13 +928,7 @@ app.get("/world/scan", async (c) => {
       sensorStrength,
       radiusTiles,
     });
-    const scanBattery = Math.max(0, eva.suitBattery - scanBatteryCost(eva.maxSuitBattery, sensorStrength));
-    saveEvaState({
-      ...eva,
-      suitBattery: scanBattery,
-      estimatedTicksRemaining: Math.min(Math.ceil(scanBattery / eva.batteryConsumptionPerTick), Math.ceil(eva.suitOxygen / eva.oxygenConsumptionPerTick)),
-      exhausted: scanBattery <= 0 || eva.suitOxygen <= 0,
-    });
+    consumeEvaBatteryAtomically(scanBatteryCost(eva.maxSuitBattery, sensorStrength));
     return c.json(scan);
   } catch (error) {
     return friendlyError(c, error);
