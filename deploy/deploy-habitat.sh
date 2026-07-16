@@ -10,7 +10,7 @@ git pull --ff-only
 
 ~/.bun/bin/bun install --frozen-lockfile
 ~/.bun/bin/bun test
-~/.bun/bin/bunx tsc --noEmit
+~/.bun/bin/bun x tsc --noEmit
 
 NEXT_DIST="$DEPLOY_DIR/.dist-next"
 rm -rf "$NEXT_DIST"
