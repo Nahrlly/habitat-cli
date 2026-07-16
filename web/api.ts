@@ -26,7 +26,7 @@ export const habitatApi = {
   evaStatus: () => request<{ eva: EvaStatus }>("/eva/status"),
   deployEva: (humanId: string) => request<{ eva: EvaStatus }>("/eva/deploy", { method: "POST", body: JSON.stringify({ humanId }) }),
   moveEva: (x: number, y: number) => request<{ eva: EvaStatus }>("/eva/move", { method: "POST", body: JSON.stringify({ x, y }) }),
-  scan: (strength: number, radius: number) => request<ResourceScan>(`/world/scan?strength=${strength}&radius=${radius}`),
+  scan: async (strength: number, radius: number) => { const result = await request<ResourceScan>(`/world/scan?strength=${strength}&radius=${radius}`); window.dispatchEvent(new CustomEvent("habitat-scan-result", { detail: { result, strength, radius } })); return result; },
   collect: (quantityKg: number) => request<Record<string, unknown>>("/world/collect", { method: "POST", body: JSON.stringify({ quantityKg }) }),
   dockEva: () => request<{ eva: EvaStatus }>("/eva/dock", { method: "POST" }),
   module: (selector: string) => request<{ module: Registration["modules"][number]; construction: Record<string, unknown> | null }>(`/modules/${encodeURIComponent(selector)}`),

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { habitatApi, type EvaStatus, type Human, type Registration, type ResourceScan, type SolarStatus, type PowerOverview } from "./api";
 import { buildEvaPath, buildResourceMarkers, formatEvaCoordinate } from "./eva-graph";
+import { ScanPopup } from "./scan-popup";
 import "./styles.css";
 import "./theme-overrides.css";
 
@@ -85,4 +86,5 @@ function formatDetailValue(value: unknown): string { if (value === null || value
 function Shell({ children, view, navigate, error, retry }: { children: React.ReactNode; view: View; navigate: (view: View) => void; error: string; retry: () => void }) { const items = ["Home", "Modules", "Blueprints", "Humans", "Resources", "Reports", "Weather", "Settings"]; const [collapsed, setCollapsed] = useState(() => window.localStorage.getItem("habitat-sidebar-collapsed") === "true"); function toggleSidebar() { setCollapsed((current) => { const next = !current; window.localStorage.setItem("habitat-sidebar-collapsed", String(next)); return next; }); } return <main className={collapsed ? "sidebar-collapsed" : ""}><aside><button className="brand" onClick={() => navigate("settings")} aria-label="Open settings">H<span>+</span></button><button className="sidebar-toggle" onClick={toggleSidebar} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>{collapsed ? "›" : "‹"}</button>{items.map((item, index) => { const target = index === 0 ? "home" : index === 1 ? "modules" : index === 3 ? "humans" : index === 5 ? "reports" : index === 6 ? "weather" : index === 7 ? "settings" : null; return <button className={`nav ${view === target ? "active" : ""}`} disabled={!target} onClick={() => target && navigate(target)} key={item}><span>{["⌂", "◈", "▧", "♙", "⌘", "▤", "☼", "⚙"][index]}</span><b>{item}</b></button>; })}</aside><div className="content">{error && <div className="error">{error} <button onClick={retry}>Retry</button></div>}{children}</div></main>; }
 
 createRoot(document.getElementById("root")!).render(<App />);
+const scanPopupRoot = document.createElement("div"); document.body.appendChild(scanPopupRoot); createRoot(scanPopupRoot).render(<ScanPopup />);
 function subjectLabel(subject: unknown): string { if (!subject || typeof subject !== "object") return "Habitat-wide"; const value = subject as { type?: unknown; id?: unknown }; return typeof value.type === "string" && typeof value.id === "string" ? `${value.type}: ${value.id}` : "Habitat-wide"; }
