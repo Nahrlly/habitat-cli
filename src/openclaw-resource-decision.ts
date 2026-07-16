@@ -59,7 +59,7 @@ export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionO
     ].join("\n");
     const raw = await runAgent({ sessionId: `habitat-resource-mission-${context.mission.id}`, message, timeoutSeconds });
     const responseText = extractAssistantText(raw);
-    return { ...parseOpenClawPlan(responseText, maxPlanSteps), responseText };
+    return { ...parseOpenClawPlan(responseText, maxPlanSteps), responseText, source: "openclaw" };
   };
 
 }

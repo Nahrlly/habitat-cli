@@ -31,6 +31,7 @@ describe("OpenClaw resource decision", () => {
         { type: "move", x: 1, y: 0 },
         { type: "collect", quantityKg: 5 },
       ],
+      source: "openclaw",
       responseText: '[{"type":"scan","strength":50,"radius":1},{"type":"move","x":1,"y":0},{"type":"collect","quantityKg":5}]',
     });
   });
