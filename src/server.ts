@@ -1224,7 +1224,13 @@ function makeUniqueSelector(identifier: string, modules: HabitatModule[]): strin
 }
 
 function readSectorBounds(payload: Record<string, unknown>): EvaSectorBounds | undefined {
-  const candidates = [payload, isRecord(payload.sector) ? payload.sector : null, isRecord(payload.bounds) ? payload.bounds : null];
+  const sector = isRecord(payload.sector) ? payload.sector : null;
+  const candidates = [
+    payload,
+    sector,
+    isRecord(payload.bounds) ? payload.bounds : null,
+    sector && isRecord(sector.bounds) ? sector.bounds : null,
+  ];
   for (const candidate of candidates) {
     if (!candidate) continue;
     const minX = candidate.minX ?? candidate.xMin;
