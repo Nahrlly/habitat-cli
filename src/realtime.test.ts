@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { HabitatRealtimeSnapshot, PowerOverviewResponse, PowerHistoryResponse, SolarStatusResponse } from "./realtime.js";
 import {
   addRealtimeClient,
@@ -8,6 +11,8 @@ import {
   type HabitatRealtimeSnapshot,
 } from "./realtime.js";
 import { app, broadcastCurrentSnapshot, buildRealtimeSnapshot } from "./server.js";
+import { saveState } from "./state.js";
+import type { KeplerRegistration } from "./types.js";
 
 const snapshot: HabitatRealtimeSnapshot = {
   registration: null,
@@ -93,6 +98,54 @@ describe("realtime client registry", () => {
 });
 
 describe("dashboard WebSocket endpoint", () => {
+  test("delivers a subsequent snapshot after a persisted module mutation", async () => {
+    const dataDirectory = mkdtempSync(path.join(os.tmpdir(), "habitat-realtime-"));
+    const originalDataDirectory = process.env.HABITAT_DATA_DIRECTORY;
+    const originalFetch = globalThis.fetch;
+    const messages: string[] = [];
+    const connected = client((message) => messages.push(message));
+    const registration: KeplerRegistration = {
+      habitatId: "habitat-test",
+      habitatUuid: "uuid-test",
+      displayName: "Realtime Test Habitat",
+      streamUrl: "wss://example.test/stream",
+      apiToken: "token-test",
+      stream: { protocolVersion: "1", subscriptions: [], currentTick: 0, tickIntervalMs: 1000, ticksPerPulse: 1, status: "running" },
+      contracts: { alerts: { schemaVersion: "1", schema: {} } },
+      habitat: { id: "habitat-test", habitatSlug: "realtime-test", displayName: "Realtime Test Habitat", catalogVersion: "test", status: "registered", lastSeenAt: null },
+      modules: [{ id: "module-suitport", selector: "suitport", blueprintId: "basic-suitport", displayName: "Suitport", connectedTo: [], runtimeAttributes: { status: "offline" }, capabilities: [] }],
+      humans: [],
+      alerts: [],
+      blueprints: [],
+    };
+
+    process.env.HABITAT_DATA_DIRECTORY = dataDirectory;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ wPerM2: 0 }), { status: 200 })) as typeof fetch;
+
+    try {
+      saveState(registration);
+      addRealtimeClient(connected);
+
+      const response = await app.fetch(new Request("http://localhost/modules/suitport/status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "active" }),
+      }));
+
+      expect(response.status).toBe(200);
+      expect(messages).toHaveLength(1);
+      const event = JSON.parse(messages[0]!);
+      expect(event.type).toBe("snapshot");
+      expect(event.snapshot.modules.find((module: { selector: string }) => module.selector === "suitport").runtimeAttributes.status).toBe("active");
+    } finally {
+      removeRealtimeClient(connected);
+      globalThis.fetch = originalFetch;
+      if (originalDataDirectory === undefined) delete process.env.HABITAT_DATA_DIRECTORY;
+      else process.env.HABITAT_DATA_DIRECTORY = originalDataDirectory;
+      rmSync(dataDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("uses explicit REST response shapes for realtime payloads", () => {
     const solar: SolarStatusResponse = { solarIrradiance: { wPerM2: 321 } };
     const power: PowerOverviewResponse = { generationKw: 4, consumptionKw: 2, netKw: 2, solarIrradiance: { wPerM2: 321 } };
