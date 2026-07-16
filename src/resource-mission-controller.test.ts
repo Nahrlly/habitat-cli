@@ -22,7 +22,7 @@ describe("resource mission controller", () => {
     const mission = await controller.start();
     await controller.waitForCompletion(mission.id);
 
-    expect(harness.calls).toEqual(["deploy", "scan:50:1", "collect:1", "dock"]);
+    expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:1", "move:0:0", "dock"]);
     expect(controller.report()).toMatchObject({
       id: mission.id,
       status: "completed",
@@ -30,7 +30,9 @@ describe("resource mission controller", () => {
       iterations: [
         { action: "deploy" },
         { action: "scan" },
+        { action: "move" },
         { action: "collect" },
+        { action: "move" },
         { action: "dock" },
       ],
     });

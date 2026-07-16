@@ -210,10 +210,29 @@ async function loadSnapshot(api: ResourceMissionApi): Promise<ResourceMissionSna
 
 function missionActions(mission: ResourceMission, snapshot: ResourceMissionSnapshot): ResourceMissionAction[] {
   if (!snapshot.eva.deployedHumanId) return [{ type: "deploy", humanId: mission.humanId }];
-  const previousAction = loadResourceMissionReport(mission.id)?.iterations.at(-1)?.action;
-  return previousAction === "scan"
-    ? [{ type: "collect", quantityKg: 1 }, { type: "scan", strength: DEFAULT_SCAN_STRENGTH, radius: DEFAULT_SCAN_RADIUS }]
-    : [{ type: "scan", strength: DEFAULT_SCAN_STRENGTH, radius: DEFAULT_SCAN_RADIUS }, { type: "collect", quantityKg: 1 }];
+  const iterations = loadResourceMissionReport(mission.id)?.iterations ?? [];
+  const previousAction = iterations.at(-1)?.action;
+  if (previousAction === "scan") {
+    const target = nearestScannedResource(iterations.at(-1)?.scan, snapshot.eva.x, snapshot.eva.y);
+    if (target) return [{ type: "move", x: target.x, y: target.y }];
+    const fallback = [[snapshot.eva.x + 1, snapshot.eva.y], [snapshot.eva.x - 1, snapshot.eva.y], [snapshot.eva.x, snapshot.eva.y + 1], [snapshot.eva.x, snapshot.eva.y - 1]]
+      .find(([x, y]) => x >= snapshot.bounds.minX && x <= snapshot.bounds.maxX && y >= snapshot.bounds.minY && y <= snapshot.bounds.maxY);
+    return fallback ? [{ type: "move", x: fallback[0], y: fallback[1] }] : [{ type: "scan", strength: DEFAULT_SCAN_STRENGTH, radius: DEFAULT_SCAN_RADIUS }];
+  }
+  if (previousAction === "move") return [{ type: "collect", quantityKg: 1 }];
+  return [{ type: "scan", strength: DEFAULT_SCAN_STRENGTH, radius: DEFAULT_SCAN_RADIUS }];
+}
+
+function nearestScannedResource(scan: Record<string, unknown> | null | undefined, x: number, y: number): { x: number; y: number } | null {
+  const payload = isRecord(scan?.scan) ? scan.scan : scan;
+  const tiles = Array.isArray(payload?.tiles) ? payload.tiles : [];
+  const candidates = tiles
+    .filter(isRecord)
+    .filter((tile) => Math.abs(Number(tile.x) - x) + Math.abs(Number(tile.y) - y) === 1)
+    .filter((tile) => isRecord(tile.quantityEstimate) && typeof tile.topCandidate === "object" && tile.topCandidate !== null && typeof (tile.topCandidate as Record<string, unknown>).resourceType === "string")
+    .sort((left, right) => Number((right.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0) - Number((left.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0));
+  const target = candidates[0];
+  return target && typeof target.x === "number" && typeof target.y === "number" ? { x: target.x, y: target.y } : null;
 }
 
 function resourceStopReason(mission: ResourceMission, snapshot: ResourceMissionSnapshot): ResourceMissionStopReason | null {
@@ -259,6 +278,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function pause(delayMs: number): Promise<void> {
