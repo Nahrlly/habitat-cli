@@ -5,6 +5,7 @@ import { type KeplerCatalogBlueprint, type KeplerCatalogResource } from "./keple
 import { addInventoryQuantity, loadInventoryState, setInventoryQuantity } from "./inventory-state.js";
 import { assertModuleCanBeDeleted, listHumans } from "./human-domain.js";
 import { createApiClient, ApiError } from "./api-client.js";
+import { runAutonomyCommand } from "./autonomy-cli.js";
 import { formatClockEvent, formatClockStatus, toClockStatusJson, type HabitatClockEvent } from "./clock-formatters.js";
 import {
   ensureKeplerEnv,
@@ -223,6 +224,11 @@ export function createProgram(): Command {
   const evaCommand = program.command("eva").description("Manage local EVA exploration.");
   const alertCommand = program.command("alert").description("Manage Habitat operational alerts.");
   const clockCommand = program.command("clock").description("Manage the local Kepler live clock connection.");
+  const autonomyCommand = program.command("autonomy").description("Run bounded OpenClaw Habitat autonomy.");
+  autonomyCommand.command("start").description("Enable the configured autonomy schedule.").option("--every <interval>", "interval such as 5m or 1h").option("--name <name>", "schedule name").action((options) => runAutonomyCommand("start", options).catch(reportAutonomyError));
+  autonomyCommand.command("stop").description("Disable the autonomy schedule.").action(() => runAutonomyCommand("stop", {}).catch(reportAutonomyError));
+  autonomyCommand.command("status").description("Show autonomy schedule and audit status.").action(() => runAutonomyCommand("status", {}).catch(reportAutonomyError));
+  autonomyCommand.command("run-now").description("Run exactly one autonomy inspection and action cycle.").action(() => runAutonomyCommand("run-now", {}).catch(reportAutonomyError));
 
   clockCommand
     .command("status")
@@ -859,6 +865,11 @@ export function createProgram(): Command {
   });
 
   return program;
+}
+
+function reportAutonomyError(error: unknown): void {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 }
 
 async function registerWithKepler(displayName: string): Promise<KeplerRegistration> {
