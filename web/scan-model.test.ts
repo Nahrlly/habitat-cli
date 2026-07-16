@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getScanTiles } from "./scan-model";
+import { buildScanPlot, getScanTiles } from "./scan-model";
 
 describe("scan response model", () => {
   test("reads tiles from the nested Kepler scan response", () => {
@@ -15,5 +15,17 @@ describe("scan response model", () => {
 
   test("returns an empty list only when the API has no tiles", () => {
     expect(getScanTiles({ scan: { tiles: [] } })).toEqual([]);
+  });
+
+  test("plots each tile using its server-provided highest-probability resource", () => {
+    const plot = buildScanPlot({
+      scan: {
+        origin: { x: 2, y: -3 },
+        tiles: [{ x: 3, y: -3, topCandidate: { resourceType: "ferrite", probabilityPct: 71.2 } }],
+      },
+    });
+
+    expect(plot.origin).toEqual({ x: 2, y: -3 });
+    expect(plot.tiles[0]).toMatchObject({ resourceLabel: "ferrite", probabilityPct: 71.2 });
   });
 });
