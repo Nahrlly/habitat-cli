@@ -174,11 +174,13 @@ function initializeSchema(db: Database): void {
     current_action TEXT,
     stop_reason TEXT,
     error TEXT,
+    priority_resources_json TEXT NOT NULL DEFAULT '[]',
     final_eva_json TEXT,
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT
   );`);
+  ensureColumn(db, "resource_missions", "priority_resources_json", "TEXT NOT NULL DEFAULT '[]'");
   db.run(`CREATE TABLE IF NOT EXISTS resource_mission_iterations (
     id TEXT PRIMARY KEY,
     mission_id TEXT NOT NULL REFERENCES resource_missions(id),

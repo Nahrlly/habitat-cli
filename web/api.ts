@@ -22,8 +22,9 @@ export type HabitatRealtimeSnapshot = { registration: Registration | null; modul
 export type Human = { id: string; displayName: string; locationModuleId: string; status: string };
 export type EvaResource = { resourceId: string; displayName?: string; quantityKg: number };
 export type EvaStatus = { deployedHumanId: string | null; x: number; y: number; carriedResources: EvaResource[]; maxCarryingCapacityKg: number; suitBattery: number; maxSuitBattery: number; suitOxygen: number; maxSuitOxygen: number; estimatedTicksRemaining: number; exhausted: boolean };
-export type ResourceMission = { id: string; humanId: string; status: "running" | "stopping" | "completed" | "failed"; currentAction: string | null; stopReason: string | null; error: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
+export type ResourceMission = { id: string; humanId: string; priorityResources: ResourceMissionPriority[]; status: "running" | "stopping" | "completed" | "failed"; currentAction: string | null; stopReason: string | null; error: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
 export type ResourceMissionStatus = { mission: ResourceMission | null; eva: EvaStatus | null };
+export type ResourceMissionPriority = { resourceId: string; quantityKg: number };
 export type ResourceMissionReport = ResourceMission & { iterations: Array<{ id: string; sequence: number; action: string; actionInput: Record<string, unknown>; error: string | null; createdAt: string }>; collectedResources: EvaResource[]; errors: string[] };
 export type ResourceScanTile = { x: number; y: number; terrain?: string; probabilities?: Array<{ resourceType: string | null; probabilityPct: number }>; topCandidate?: { resourceType: string | null; probabilityPct: number }; quantityEstimate?: { resourceType?: string; estimatedKg?: number; minimumKg?: number; maximumKg?: number } | null };
 export type ResourceScanCoordinate = { x: number; y: number };
@@ -87,7 +88,7 @@ export const habitatApi = {
   scan: async (strength: number, radius: number) => { const result = await request<ResourceScan>(`/world/scan?strength=${strength}&radius=${radius}`); scanHistory = mergeScanResults(scanHistory, result); window.dispatchEvent(new CustomEvent("habitat-scan-result", { detail: { result: scanHistory, strength, radius } })); return scanHistory; },
   collect: (quantityKg: number) => request<Record<string, unknown>>("/world/collect", { method: "POST", body: JSON.stringify({ quantityKg }) }),
   dockEva: () => request<{ eva: EvaStatus }>("/eva/dock", { method: "POST" }),
-  startResourceMission: () => request<ResourceMissionStatus>("/autonomy/mission/start", { method: "POST" }),
+  startResourceMission: (priorityResources: ResourceMissionPriority[] = []) => request<ResourceMissionStatus>("/autonomy/mission/start", { method: "POST", body: JSON.stringify({ priorityResources }) }),
   resourceMissionStatus: () => request<ResourceMissionStatus>("/autonomy/mission/status"),
   stopResourceMission: () => request<ResourceMissionStatus>("/autonomy/mission/stop", { method: "POST" }),
   resourceMissionReport: () => request<{ report: ResourceMissionReport }>("/autonomy/mission/report"),

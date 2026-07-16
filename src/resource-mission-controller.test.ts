@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createResourceMissionController } from "./resource-mission-controller.js";
+import type { ResourceMissionAction } from "./autonomy-policy.js";
 
 const previousDataDirectory = process.env.HABITAT_DATA_DIRECTORY;
 const directories: string[] = [];
@@ -172,9 +173,33 @@ describe("resource mission controller", () => {
     expect(planCalls).toBe(3);
     expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:4", "move:0:0", "dock"]);
   });
+
+  test("prefers a pinned blueprint resource over a nearer fallback resource", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ scanResources: [
+      { x: 1, y: 0, resourceType: "ice", estimatedKg: 4 },
+      { x: -1, y: 0, resourceType: "ferrite", estimatedKg: 2 },
+    ] });
+    let selectedTarget: ResourceMissionAction | undefined;
+    const controller = createResourceMissionController({
+      api: harness.api,
+      delayMs: 0,
+      plan: async ({ snapshot, legalActions }) => {
+        if (!snapshot.eva.deployedHumanId) return [{ type: "deploy", humanId: "human-1" }];
+        if (legalActions.some((action) => action.type === "scan")) return [{ type: "scan", strength: 50, radius: 1 }];
+        selectedTarget = legalActions[0]!;
+        return selectedTarget;
+      },
+    });
+
+    const mission = await controller.start({ priorityResources: [{ resourceId: "ferrite", quantityKg: 2 }] });
+    await controller.waitForCompletion(mission.id);
+
+    expect(selectedTarget).toEqual({ type: "move", x: -1, y: 0 });
+  });
 });
 
-function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number; boundsFailureAt: { x: number; y: number }; scanEstimateKg: number }> = {}) {
+function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number; boundsFailureAt: { x: number; y: number }; scanEstimateKg: number; scanResources: Array<{ x: number; y: number; resourceType: string; estimatedKg: number }> }> = {}) {
   const calls: string[] = [];
   const eva = {
     deployedHumanId: initial.deployedHumanId ?? null,
@@ -193,7 +218,7 @@ function createHarness(initial: Partial<{ deployedHumanId: string | null; x: num
     evaStatus: async () => ({ eva: { ...eva, carriedResources: eva.carriedResources.map((resource) => ({ ...resource })) } }),
     bounds: async () => { if (initial.boundsFailureAt && eva.x === initial.boundsFailureAt.x && eva.y === initial.boundsFailureAt.y) throw new Error("temporary bounds failure"); return { minX: -2, maxX: 2, minY: -2, maxY: 2 }; },
     deploy: async (humanId: string) => { calls.push("deploy"); eva.deployedHumanId = humanId; },
-    scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); return { scan: { tiles: initial.scanEstimateKg ? [{ x: 1, y: 0, topCandidate: { resourceType: "ice" }, quantityEstimate: { estimatedKg: initial.scanEstimateKg } }] : [] } }; },
+    scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); const resources = initial.scanResources ?? (initial.scanEstimateKg ? [{ x: 1, y: 0, resourceType: "ice", estimatedKg: initial.scanEstimateKg }] : []); return { scan: { tiles: resources.map((resource) => ({ x: resource.x, y: resource.y, topCandidate: { resourceType: resource.resourceType }, quantityEstimate: { estimatedKg: resource.estimatedKg } })) } }; },
     collect: async (quantityKg: number) => { calls.push(`collect:${quantityKg}`); const current = eva.carriedResources[0]?.quantityKg ?? 0; eva.carriedResources = [{ resourceId: "ice", quantityKg: current + quantityKg }]; return { resourceId: "ice", quantityKg }; },
     move: async (x: number, y: number) => { calls.push(`move:${x}:${y}`); eva.x = x; eva.y = y; },
     dock: async () => { calls.push("dock"); eva.deployedHumanId = null; },

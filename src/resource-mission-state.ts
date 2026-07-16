@@ -5,6 +5,7 @@ import type {
   ResourceMissionCollectedResource,
   ResourceMissionEvaSnapshot,
   ResourceMissionIteration,
+  ResourceMissionPriority,
   ResourceMissionReport,
   ResourceMissionStatus,
   ResourceMissionStopReason,
@@ -17,6 +18,7 @@ type ResourceMissionRow = {
   currentAction: string | null;
   stopReason: ResourceMissionStopReason | null;
   error: string | null;
+  priorityResourcesJson: string;
   finalEvaJson: string | null;
   startedAt: string;
   updatedAt: string;
@@ -41,6 +43,7 @@ export type StartResourceMissionInput = {
   humanId: string;
   startedAt?: string;
   currentAction?: string | null;
+  priorityResources?: ResourceMissionPriority[];
 };
 
 export type UpdateResourceMissionInput = {
@@ -89,6 +92,7 @@ export function startResourceMission(input: StartResourceMissionInput): Resource
   const mission: ResourceMission = {
     id: input.id ?? randomUUID(),
     humanId: input.humanId,
+    priorityResources: normalizePriorityResources(input.priorityResources),
     status: "running",
     currentAction: input.currentAction ?? null,
     stopReason: null,
@@ -106,12 +110,13 @@ export function startResourceMission(input: StartResourceMissionInput): Resource
     try {
       db.query(`INSERT INTO resource_missions (
         id, human_id, status, active_key, current_action, stop_reason, error,
-        final_eva_json, started_at, updated_at, completed_at
-      ) VALUES (?, ?, ?, 'active', ?, NULL, NULL, NULL, ?, ?, NULL)`).run(
+        priority_resources_json, final_eva_json, started_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, 'active', ?, NULL, NULL, ?, NULL, ?, ?, NULL)`).run(
         mission.id,
         mission.humanId,
         mission.status,
         mission.currentAction,
+        JSON.stringify(mission.priorityResources),
         mission.startedAt,
         mission.updatedAt,
       );
@@ -243,7 +248,7 @@ export function loadLatestResourceMissionReport(): ResourceMissionReport | null 
 function resourceMissionSelect(whereClause: string): string {
   return `SELECT
     id, human_id AS humanId, status, current_action AS currentAction, stop_reason AS stopReason,
-    error, final_eva_json AS finalEvaJson, started_at AS startedAt, updated_at AS updatedAt,
+    error, priority_resources_json AS priorityResourcesJson, final_eva_json AS finalEvaJson, started_at AS startedAt, updated_at AS updatedAt,
     completed_at AS completedAt
     FROM resource_missions ${whereClause}`;
 }
@@ -274,11 +279,16 @@ function toMission(row: ResourceMissionRow): ResourceMission {
     currentAction: row.currentAction,
     stopReason: row.stopReason,
     error: row.error,
+    priorityResources: normalizePriorityResources(JSON.parse(row.priorityResourcesJson) as ResourceMissionPriority[]),
     finalEvaSnapshot: row.finalEvaJson ? JSON.parse(row.finalEvaJson) as ResourceMissionEvaSnapshot : null,
     startedAt: row.startedAt,
     updatedAt: row.updatedAt,
     completedAt: row.completedAt,
   };
+}
+
+function normalizePriorityResources(resources: ResourceMissionPriority[] | undefined): ResourceMissionPriority[] {
+  return (resources ?? []).filter((resource) => typeof resource.resourceId === "string" && resource.resourceId.trim() && Number.isFinite(resource.quantityKg) && resource.quantityKg > 0).map((resource) => ({ resourceId: resource.resourceId.trim(), quantityKg: resource.quantityKg }));
 }
 
 function toIteration(row: ResourceMissionIterationRow): ResourceMissionIteration {

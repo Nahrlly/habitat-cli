@@ -18,9 +18,15 @@ export type ResourceMissionCollectedResource = {
   displayName?: string;
 };
 
+export type ResourceMissionPriority = {
+  resourceId: string;
+  quantityKg: number;
+};
+
 export type ResourceMission = {
   id: string;
   humanId: string;
+  priorityResources: ResourceMissionPriority[];
   status: ResourceMissionStatus;
   currentAction: string | null;
   stopReason: ResourceMissionStopReason | null;

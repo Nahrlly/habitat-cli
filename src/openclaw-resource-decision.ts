@@ -53,6 +53,7 @@ export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionO
         mission: { id: context.mission.id, status: context.mission.status, humanId: context.mission.humanId },
         snapshot: context.snapshot,
         legalActions: context.legalActions,
+        priorityResources: context.priorityResources,
         maxPlanSteps,
         recentIterations: (context.recentIterations ?? []).map(summarizePlanIteration),
       }),

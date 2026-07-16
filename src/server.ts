@@ -29,6 +29,7 @@ import { loadClockState } from "./clock-state.js";
 import { createResourceMissionController, type ResourceMissionApi } from "./resource-mission-controller.js";
 import { loadActiveResourceMission } from "./resource-mission-state.js";
 import { createOpenClawResourcePlanner } from "./openclaw-resource-decision.js";
+import type { ResourceMissionPriority } from "./resource-mission.js";
 
 export const app = new Hono();
 const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi(), plan: createOpenClawResourcePlanner(), fallbackPlanOnError: true });
@@ -206,7 +207,8 @@ app.post("/eva/dock", async (c) => {
 
 app.post("/autonomy/mission/start", async (c) => {
   try {
-    const mission = await resourceMissionController.start();
+    const body = (await c.req.json().catch(() => null)) as { priorityResources?: ResourceMissionPriority[] } | null;
+    const mission = await resourceMissionController.start({ priorityResources: body?.priorityResources });
     const { eva } = await resourceMissionController.status();
     return c.json({ mission, eva }, 202);
   } catch (error) {
@@ -973,6 +975,12 @@ app.get("/assets/*", async (c) => {
   return new Response(await file.arrayBuffer(), { headers: { "Content-Type": contentTypeForPath(c.req.path) } });
 });
 
+app.get("/resources/*", async (c) => {
+  const file = Bun.file(path.join(dashboardDistDirectory, c.req.path.slice(1)));
+  if (!(await file.exists())) return c.notFound();
+  return new Response(await file.arrayBuffer(), { headers: { "Content-Type": contentTypeForPath(c.req.path) } });
+});
+
 app.get("*", async (c) => {
   if (!dashboardRoutes.has(c.req.path)) return c.notFound();
   return serveDashboardEntry();
@@ -1268,6 +1276,7 @@ async function loggedKeplerFetch(input: RequestInfo | URL, init?: RequestInit): 
 function contentTypeForPath(path: string): string {
   if (path.endsWith(".css")) return "text/css; charset=UTF-8";
   if (path.endsWith(".js")) return "application/javascript; charset=UTF-8";
+  if (path.endsWith(".png")) return "image/png";
   return "application/octet-stream";
 }
 

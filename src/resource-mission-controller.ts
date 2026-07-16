@@ -8,7 +8,7 @@ import {
   startResourceMission,
   updateResourceMission,
 } from "./resource-mission-state.js";
-import type { ResourceMission, ResourceMissionCollectedResource, ResourceMissionEvaSnapshot, ResourceMissionIteration, ResourceMissionReport, ResourceMissionStopReason } from "./resource-mission.js";
+import type { ResourceMission, ResourceMissionCollectedResource, ResourceMissionEvaSnapshot, ResourceMissionIteration, ResourceMissionPriority, ResourceMissionReport, ResourceMissionStopReason } from "./resource-mission.js";
 import type { HabitatEvaState, HabitatHuman } from "./types.js";
 
 export type ResourceMissionApi = {
@@ -31,6 +31,7 @@ export type ResourceMissionDecisionContext = {
 export type ResourceMissionPlanContext = ResourceMissionDecisionContext & {
   maxPlanSteps: number;
   recentIterations: ResourceMissionIteration[];
+  priorityResources: ResourceMissionPriority[];
 };
 
 export type ResourceMissionPlanResult = {
@@ -42,7 +43,7 @@ export type ResourceMissionPlanResult = {
 export type ResourceMissionPlanner = (context: ResourceMissionPlanContext) => Promise<ResourceMissionAction[] | ResourceMissionPlanResult>;
 
 export type ResourceMissionController = {
-  start(): Promise<ResourceMission>;
+  start(input?: { priorityResources?: ResourceMissionPriority[] }): Promise<ResourceMission>;
   resumeActiveMission(seed: Pick<ResourceMission, "id" | "humanId">): Promise<ResourceMission>;
   stop(): Promise<ResourceMission | null>;
   status(): Promise<{ mission: ResourceMission | null; eva: ResourceMissionEvaSnapshot | null }>;
@@ -67,14 +68,14 @@ export function createResourceMissionController(input: {
   const plan = input.plan ?? (async (context: ResourceMissionPlanContext) => [await decide(context)]);
   const delayMs = input.delayMs ?? 100;
 
-  async function start(): Promise<ResourceMission> {
+  async function start(missionInput?: { priorityResources?: ResourceMissionPriority[] }): Promise<ResourceMission> {
     if (loadActiveResourceMission()) throw new Error("A resource mission is already active.");
     const { humans } = await input.api.humans();
     const { eva } = await input.api.evaStatus();
     if (eva.deployedHumanId) throw new Error("EVA must be docked before starting a resource mission.");
     const human = selectEligibleHuman(humans);
     if (!human) throw new Error("No eligible human is available at the suitport for a resource mission.");
-    const mission = startResourceMission({ humanId: human.id, currentAction: "queued" });
+    const mission = startResourceMission({ humanId: human.id, currentAction: "queued", priorityResources: missionInput?.priorityResources });
     schedule(mission.id);
     return mission;
   }
@@ -154,6 +155,7 @@ export function createResourceMissionController(input: {
           legalActions,
           maxPlanSteps,
           recentIterations: (loadResourceMissionReport(mission.id)?.iterations ?? []).slice(-8),
+          priorityResources: mission.priorityResources,
         });
         if (Array.isArray(planned)) {
           actions = planned;
@@ -282,7 +284,7 @@ function missionActions(mission: ResourceMission, snapshot: ResourceMissionSnaps
   const iterations = loadResourceMissionReport(mission.id)?.iterations ?? [];
   const previousAction = iterations.at(-1)?.action;
   if (previousAction === "scan") {
-    const target = nearestScannedResource(iterations.at(-1)?.scan, snapshot.eva.x, snapshot.eva.y);
+    const target = nearestScannedResource(iterations.at(-1)?.scan, snapshot.eva.x, snapshot.eva.y, mission.priorityResources);
     if (target) return [{ type: "move", x: target.x, y: target.y }];
     const fallback = [[snapshot.eva.x + 1, snapshot.eva.y], [snapshot.eva.x - 1, snapshot.eva.y], [snapshot.eva.x, snapshot.eva.y + 1], [snapshot.eva.x, snapshot.eva.y - 1]]
       .find(([x, y]) => x >= snapshot.bounds.minX && x <= snapshot.bounds.maxX && y >= snapshot.bounds.minY && y <= snapshot.bounds.maxY);
@@ -309,14 +311,21 @@ function scannedResourceAt(scan: Record<string, unknown> | null | undefined, x: 
   return typeof tile.quantityEstimate.estimatedKg === "number" ? { estimatedKg: Math.max(1, Math.floor(tile.quantityEstimate.estimatedKg)) } : {};
 }
 
-function nearestScannedResource(scan: Record<string, unknown> | null | undefined, x: number, y: number): { x: number; y: number; estimatedKg?: number } | null {
+function nearestScannedResource(scan: Record<string, unknown> | null | undefined, x: number, y: number, priorityResources: ResourceMissionPriority[] = []): { x: number; y: number; estimatedKg?: number } | null {
   const payload = isRecord(scan?.scan) ? scan.scan : scan;
   const tiles = Array.isArray(payload?.tiles) ? payload.tiles : [];
+  const priority = new Set(priorityResources.map((resource) => resource.resourceId.toLowerCase()));
   const candidates = tiles
     .filter(isRecord)
     .filter((tile) => Math.abs(Number(tile.x) - x) + Math.abs(Number(tile.y) - y) === 1)
-    .filter((tile) => isRecord(tile.quantityEstimate) && typeof tile.topCandidate === "object" && tile.topCandidate !== null && typeof (tile.topCandidate as Record<string, unknown>).resourceType === "string")
-    .sort((left, right) => Number((right.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0) - Number((left.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0));
+    .filter((tile) => isRecord(tile.quantityEstimate))
+    .sort((left, right) => {
+      const leftType = isRecord(left.topCandidate) ? String(left.topCandidate.resourceType ?? "") : String(left.resourceType ?? "");
+      const rightType = isRecord(right.topCandidate) ? String(right.topCandidate.resourceType ?? "") : String(right.resourceType ?? "");
+      const leftPriority = priority.has(leftType.toLowerCase()) ? 1 : 0;
+      const rightPriority = priority.has(rightType.toLowerCase()) ? 1 : 0;
+      return rightPriority - leftPriority || Number((right.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0) - Number((left.quantityEstimate as Record<string, unknown>).estimatedKg ?? 0);
+    });
   const target = candidates[0];
   if (!target || typeof target.x !== "number" || typeof target.y !== "number") return null;
   const estimatedKg = isRecord(target.quantityEstimate) && typeof target.quantityEstimate.estimatedKg === "number" ? Math.max(1, Math.floor(target.quantityEstimate.estimatedKg)) : undefined;

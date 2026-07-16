@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { habitatApi, type ResourceMissionReport, type ResourceMissionStatus } from "./api";
+import { buildPinnedResourcePriorities, loadPinnedBlueprintIds } from "./pinned-blueprint-resources";
 
 export function ResourceMissionPanel() {
   const [status, setStatus] = useState<ResourceMissionStatus | null>(null);
@@ -27,7 +28,15 @@ export function ResourceMissionPanel() {
     setPending(true);
     setError("");
     try {
-      setStatus(await habitatApi.startResourceMission());
+      let priorityResources = [];
+      try {
+        const pinnedIds = loadPinnedBlueprintIds(window.localStorage);
+        const [{ blueprints }, { inventory: { items } }] = await Promise.all([habitatApi.blueprints(), habitatApi.inventory()]);
+        priorityResources = buildPinnedResourcePriorities(blueprints, pinnedIds, items);
+      } catch {
+        // Mission start remains available when optional blueprint data is unavailable.
+      }
+      setStatus(await habitatApi.startResourceMission(priorityResources));
       setReport(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to start resource mission.");
