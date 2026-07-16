@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { ResourceScan } from "./api";
-import { buildScanPlot, getScanTiles } from "./scan-model";
+import { buildScanPlot, getScanTiles, mergeScanResults } from "./scan-model";
 
 type ScanEvent = { result: ResourceScan; strength: number; radius: number };
 
@@ -16,13 +16,18 @@ function formatEstimate(tile: ReturnType<typeof getScanTiles>[number]): string {
 
 export function ScanPopup() {
   const [scan, setScan] = useState<ScanEvent | null>(null);
+  const [scanHistory, setScanHistory] = useState<ResourceScan | null>(null);
   useEffect(() => {
-    const onScan = (event: Event) => setScan((event as CustomEvent<ScanEvent>).detail);
+    const onScan = (event: Event) => {
+      const detail = (event as CustomEvent<ScanEvent>).detail;
+      setScan(detail);
+      setScanHistory((previous) => mergeScanResults(previous, detail.result));
+    };
     window.addEventListener("habitat-scan-result", onScan);
     return () => window.removeEventListener("habitat-scan-result", onScan);
   }, []);
 
-  const plot = useMemo(() => (scan ? buildScanPlot(scan.result) : null), [scan]);
+  const plot = useMemo(() => (scanHistory ? buildScanPlot(scanHistory) : null), [scanHistory]);
   if (!scan || !plot) return null;
 
   const resources = [...new Set(plot.tiles.map((tile) => tile.resourceLabel))];

@@ -8,7 +8,7 @@ Show a spatial plot in the existing scan popup after an EVA scan succeeds.
 
 The popup will render a dark SVG coordinate grid centered on the scan origin. Each returned tile is positioned from its server-provided `x` and `y` coordinates and labeled with only its highest-probability `topCandidate`. Marker color is presentation-only and is paired with a text legend. Focused or hovered tiles expose the server-provided coordinate, terrain, probability, and quantity estimate. The existing compact table remains available below the map for precise values.
 
-The browser will read the existing `GET /world/scan` response, including Kepler's nested `scan.tiles` shape. It will not infer resource probabilities, locations, quantities, or Habitat rules.
+The browser will read the existing `GET /world/scan` response, including Kepler's nested `scan.tiles` shape. Successful scans accumulate in dashboard view state for the current page session, keyed by coordinate; rescanning a coordinate replaces that tile's display data. It will not infer resource probabilities, locations, quantities, or Habitat rules.
 
 ## Verification
 
