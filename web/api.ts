@@ -6,6 +6,8 @@ export type Registration = {
 
 export type SolarStatus = { solarIrradiance: { wPerM2: number; condition?: string } };
 export type PowerOverview = SolarStatus & { generationKw: number; consumptionKw: number; netKw: number };
+export type PowerHistoryPoint = { recordedAt: string; generationKw: number; consumptionKw: number; netKw: number; modules: Array<{ selector: string; displayName: string; powerKw: number }> };
+export type HabitatRealtimeSnapshot = { registration: Registration | null; modules: Registration["modules"]; humans: Human[]; solar: SolarStatus | null; power: PowerOverview | null; powerHistory: PowerHistoryPoint[]; alerts: Array<Record<string, unknown>> };
 export type Human = { id: string; displayName: string; locationModuleId: string; status: string };
 export type EvaResource = { resourceId: string; quantityKg: number };
 export type EvaStatus = { deployedHumanId: string | null; x: number; y: number; carriedResources: EvaResource[]; maxCarryingCapacityKg: number; suitBattery: number; maxSuitBattery: number; suitOxygen: number; maxSuitOxygen: number; estimatedTicksRemaining: number; exhausted: boolean };
@@ -16,6 +18,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `${response.status} ${response.statusText}`);
   return body as T;
+}
+
+function isNotRegistered(error: unknown): boolean {
+  return error instanceof Error && error.message.toLowerCase().includes("not registered");
+}
+
+export async function loadDashboardSnapshot(): Promise<HabitatRealtimeSnapshot> {
+  const results = await Promise.allSettled([
+    habitatApi.registration(),
+    habitatApi.modules(),
+    habitatApi.humans(),
+    habitatApi.solar(),
+    habitatApi.power(),
+    habitatApi.powerHistory(),
+    habitatApi.alerts(),
+  ]);
+  const [registrationResult, modulesResult, humansResult, solarResult, powerResult, historyResult, alertsResult] = results;
+  const fulfilled = results.filter((result): result is PromiseFulfilledResult<unknown> => result.status === "fulfilled");
+  if (!fulfilled.length && !results.some((result) => result.status === "rejected" && isNotRegistered(result.reason))) {
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    throw failure?.reason instanceof Error ? failure.reason : new Error("Unable to load dashboard state.");
+  }
+
+  const registration = registrationResult.status === "fulfilled" ? registrationResult.value : null;
+  return {
+    registration,
+    modules: modulesResult.status === "fulfilled" ? modulesResult.value.modules : registration?.modules ?? [],
+    humans: humansResult.status === "fulfilled" ? humansResult.value.humans : [],
+    solar: solarResult.status === "fulfilled" ? solarResult.value : null,
+    power: powerResult.status === "fulfilled" ? powerResult.value : null,
+    powerHistory: historyResult.status === "fulfilled" ? historyResult.value.history : [],
+    alerts: alertsResult.status === "fulfilled" ? alertsResult.value.alerts ?? [] : [],
+  };
 }
 
 export const habitatApi = {
@@ -32,7 +67,7 @@ export const habitatApi = {
   module: (selector: string) => request<{ module: Registration["modules"][number]; construction: Record<string, unknown> | null }>(`/modules/${encodeURIComponent(selector)}`),
   solar: () => request<SolarStatus>("/solar/status"),
   power: () => request<PowerOverview>("/power/overview"),
-  powerHistory: (limit = 120) => request<{ history: Array<{ recordedAt: string; generationKw: number; consumptionKw: number; netKw: number; modules: Array<{ selector: string; displayName: string; powerKw: number }> }> }>(`/power/history?limit=${limit}`),
+  powerHistory: (limit = 120) => request<{ history: PowerHistoryPoint[] }>(`/power/history?limit=${limit}`),
   setModuleStatus: (selector: string, status: string) => request<{ module: Registration["modules"][number] }>(`/modules/${encodeURIComponent(selector)}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
   tick: (ticks: number) => request<{ registration: Registration }>("/commands/tick", { method: "POST", body: JSON.stringify({ ticks }) }),
   register: (name: string) => request<{ registration: Registration }>("/commands/register", { method: "POST", body: JSON.stringify({ name }) }),
