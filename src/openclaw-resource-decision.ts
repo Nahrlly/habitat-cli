@@ -46,7 +46,7 @@ export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionO
       "You are the decision layer for one whole bounded Habitat resource-mission trip segment.",
       "Return exactly one JSON array of primitive actions, in execution order, with no markdown.",
       `Plan up to ${maxPlanSteps} actions. The first action must be one of legalActions; later actions will be revalidated by Habitat after each step.`,
-      "Plan multiple useful actions rather than stopping after one collection. Use scan results in recentIterations to choose adjacent resource tiles and collect larger batches when safe.",
+      "Plan multiple useful actions rather than stopping after one collection. Use scan results in recentIterations to choose adjacent resource tiles and choose the largest safe collection quantity exposed in legalActions; do not repeat 1 kg collections when a larger batch is available.",
       "Do not return or dock. Habitat will autonomously return and dock when carrying capacity is full, oxygen or power reaches its safety threshold, or the operator stops the mission.",
       "Do not use tools, execute commands, or invent action types.",
       JSON.stringify({
