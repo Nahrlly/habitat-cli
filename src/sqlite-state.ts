@@ -68,6 +68,27 @@ function initializeSchema(db: Database): void {
   ensureColumn(db, "kepler_registration", "stream_json", "TEXT NOT NULL DEFAULT '{}' ");
   ensureColumn(db, "kepler_registration", "contracts_json", "TEXT NOT NULL DEFAULT '{}' ");
   db.run(`
+    CREATE TABLE IF NOT EXISTS clock_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      mode TEXT NOT NULL DEFAULT 'manual',
+      listening INTEGER NOT NULL DEFAULT 0,
+      connection_status TEXT NOT NULL DEFAULT 'disconnected',
+      latest_absolute_tick INTEGER,
+      latest_advanced_by INTEGER,
+      last_connection_at TEXT,
+      last_message_at TEXT,
+      latest_error TEXT
+    );
+  `);
+  ensureColumn(db, "clock_state", "mode", "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn(db, "clock_state", "listening", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "clock_state", "connection_status", "TEXT NOT NULL DEFAULT 'disconnected'");
+  ensureColumn(db, "clock_state", "latest_absolute_tick", "INTEGER");
+  ensureColumn(db, "clock_state", "latest_advanced_by", "INTEGER");
+  ensureColumn(db, "clock_state", "last_connection_at", "TEXT");
+  ensureColumn(db, "clock_state", "last_message_at", "TEXT");
+  ensureColumn(db, "clock_state", "latest_error", "TEXT");
+  db.run(`
     CREATE TABLE IF NOT EXISTS habitat_humans (
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,

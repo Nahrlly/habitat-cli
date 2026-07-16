@@ -192,6 +192,21 @@ export type HabitatStream = {
   status: "paused" | "running";
 };
 
+export type HabitatClockMode = "manual" | "kepler";
+
+export type HabitatClockConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
+export type HabitatClockState = {
+  mode: HabitatClockMode;
+  listening: boolean;
+  connectionStatus: HabitatClockConnectionStatus;
+  latestAbsoluteTick: number | null;
+  latestAdvancedBy: number | null;
+  lastConnectionAt: string | null;
+  lastMessageAt: string | null;
+  latestError: string | null;
+};
+
 export type HabitatRegistrationContracts = {
   alerts: {
     schemaVersion: string;
