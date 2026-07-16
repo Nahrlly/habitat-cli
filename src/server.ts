@@ -11,7 +11,7 @@ import type {
   KeplerStarterModule,
 } from "./types.js";
 import { loadKeplerRegistration, setModuleStatus } from "./state.js";
-import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, saveState } from "./state.js";
+import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, loadEvaState, saveEvaState, saveState } from "./state.js";
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
@@ -21,6 +21,7 @@ import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds } from 
 import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
+import { createOperationalAlert } from "./alerts-domain.js";
 
 export const app = new Hono();
 
@@ -181,6 +182,7 @@ app.post("/alerts", async (c) => {
     message: body.message.trim(),
     createdAt: now,
     updatedAt: now,
+    occurrenceCount: 1,
     details: body.details && typeof body.details === "object" ? body.details : {},
   };
 
@@ -211,6 +213,9 @@ app.patch("/alerts/:id", async (c) => {
     updatedAt: new Date().toISOString(),
     details: body?.details && typeof body.details === "object" ? body.details : currentAlert.details,
   };
+  if (!["open", "acknowledged", "resolved"].includes(nextAlert.status)) {
+    return c.json({ error: "Alert status must be open, acknowledged, or resolved." }, 400);
+  }
 
   saveState({
     ...registration,
@@ -444,23 +449,97 @@ app.post("/world/collect", async (c) => {
       return c.json({ error: "Habitat is not registered." }, 404);
     }
 
-    const body = (await c.req.json().catch(() => null)) as { x?: number; y?: number; quantityKg?: number } | null;
-    if (typeof body?.x !== "number" || typeof body?.y !== "number" || typeof body?.quantityKg !== "number") {
-      return c.json({ error: "x, y, and quantityKg are required." }, 400);
+    const body = (await c.req.json().catch(() => null)) as { quantityKg?: number } | null;
+    const eva = loadEvaState();
+    if (!eva?.deployedHumanId) {
+      return c.json({ error: "EVA is not deployed; deploy a human before collecting." }, 409);
+    }
+    if (typeof body?.quantityKg !== "number" || !Number.isSafeInteger(body.quantityKg) || body.quantityKg <= 0) {
+      return c.json({ error: "quantity-kg must be a positive whole number." }, 400);
+    }
+    const carriedKg = eva.carriedResources.reduce((total, resource) => total + resource.quantityKg, 0);
+    if (carriedKg + body.quantityKg > eva.maxCarryingCapacityKg) {
+      return c.json({ error: `Collection exceeds EVA carrying capacity: ${carriedKg} kg carried, ${eva.maxCarryingCapacityKg} kg maximum.` }, 409);
     }
 
-    const collection = await createWorldClient().collect({
-      habitatId: registration.habitatId,
-      x: body.x,
-      y: body.y,
-      quantityKg: body.quantityKg,
+    let collection: Record<string, unknown>;
+    try {
+      collection = await createWorldClient().collect({ habitatId: registration.habitatId, x: eva.x, y: eva.y, quantityKg: body.quantityKg });
+    } catch (error) {
+      createOperationalAlert({ type: "collection-failed", message: `Collection failed at (${eva.x}, ${eva.y}): ${(error as Error).message}`, details: { x: eva.x, y: eva.y, quantityKg: body.quantityKg } });
+      throw error;
+    }
+
+    const resourceId = extractCollectedResourceId(collection);
+    const collectedQuantityKg = extractCollectedQuantity(collection, body.quantityKg);
+    if (!resourceId || collectedQuantityKg <= 0) {
+      return c.json({ error: "Kepler collection succeeded without returning a material and quantity." }, 502);
+    }
+    const existingResource = eva.carriedResources.find((resource) => resource.resourceId === resourceId);
+    saveEvaState({
+      ...eva,
+      carriedResources: existingResource
+        ? eva.carriedResources.map((resource) => resource.resourceId === resourceId ? { ...resource, quantityKg: resource.quantityKg + collectedQuantityKg } : resource)
+        : [...eva.carriedResources, { resourceId, quantityKg: collectedQuantityKg }],
     });
+    if (carriedKg + collectedQuantityKg >= eva.maxCarryingCapacityKg) {
+      createOperationalAlert({ type: "eva-carrying-capacity-reached", message: `EVA carrying capacity reached (${eva.maxCarryingCapacityKg} kg).`, subject: { type: "human", id: eva.deployedHumanId }, details: { capacityKg: eva.maxCarryingCapacityKg } });
+    }
 
     return c.json(collection);
   } catch (error) {
     return friendlyError(c, error);
   }
 });
+
+function extractCollectedResourceId(collection: Record<string, unknown>): string | null {
+  const direct = [collection.resourceId, collection.materialId, collection.collectedResource, collection.resourceName, collection.materialName];
+  for (const value of direct) if (typeof value === "string" && value.trim()) return value;
+  if (typeof collection.material === "string" && collection.material.trim()) return collection.material;
+  if (typeof collection.resource === "string" && collection.resource.trim()) return collection.resource;
+  for (const key of ["material", "resource", "collected", "collection", "result"]) {
+    const nested = collection[key];
+    if (isRecord(nested)) {
+      const id = extractCollectedResourceId(nested);
+      if (id) return id;
+    }
+  }
+  for (const [key, value] of Object.entries(collection)) {
+    if (typeof value === "string" && /(material|resource)/i.test(key) && value.trim()) return value;
+    if (isRecord(value) && /(material|resource)/i.test(key)) {
+      for (const nestedKey of ["id", "resourceId", "materialId", "name", "slug"]) {
+        if (typeof value[nestedKey] === "string" && value[nestedKey].trim()) return value[nestedKey] as string;
+      }
+    }
+    if (isRecord(value)) {
+      const id = extractCollectedResourceId(value);
+      if (id) return id;
+    }
+  }
+  return null;
+}
+
+function extractCollectedQuantity(collection: Record<string, unknown>, requestedQuantityKg: number): number {
+  for (const key of ["quantityKg", "collectedQuantityKg", "collectedQuantity", "amountKg", "collectedAmountKg", "quantity", "amount"]) {
+    const value = collection[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  for (const key of ["material", "resource", "collected", "collection", "result"]) {
+    const nested = collection[key];
+    if (isRecord(nested)) {
+      const quantity = extractCollectedQuantity(nested, requestedQuantityKg);
+      if (quantity !== requestedQuantityKg) return quantity;
+    }
+  }
+  for (const [key, value] of Object.entries(collection)) {
+    if (typeof value === "number" && Number.isFinite(value) && /(quantity|amount|weight|mass)/i.test(key)) return value;
+    if (isRecord(value)) {
+      const quantity = extractCollectedQuantity(value, requestedQuantityKg);
+      if (quantity !== requestedQuantityKg) return quantity;
+    }
+  }
+  return requestedQuantityKg;
+}
 
 app.get("/world/sectors/current", async (c) => {
   try {
@@ -634,8 +713,10 @@ app.get("/world/scan", async (c) => {
     let radiusTiles: number;
 
     try {
-      x = parseIntegerQuery(query.x, "x");
-      y = parseIntegerQuery(query.y, "y");
+      const eva = loadEvaState();
+      if (!eva?.deployedHumanId) throw new Error("EVA is not deployed; deploy a human before scanning.");
+      x = eva.x;
+      y = eva.y;
       sensorStrength = parseIntegerQuery(query.strength ?? query.sensorStrength, "sensor strength");
       radiusTiles = parseIntegerQuery(query.radius ?? query.radiusTiles ?? "0", "radius");
     } catch (error) {

@@ -27,6 +27,9 @@ import {
   formatEnergyCost,
   formatInventoryList,
   formatHumanList,
+  formatEvaStatus,
+  formatAlertList,
+  formatCollectionResult,
   formatModuleDetails,
   formatModuleSummary,
   formatPowerDraw,
@@ -216,21 +219,33 @@ export function createProgram(): Command {
   const inventoryCommand = program.command("inventory").description("Manage local habitat inventory.");
   const humanCommand = program.command("human").description("Inspect local Habitat humans.");
   const evaCommand = program.command("eva").description("Manage local EVA exploration.");
+  const alertCommand = program.command("alert").description("Manage Habitat operational alerts.");
+
+  alertCommand.command("list").description("List operational alerts.").action(async () => {
+    try { console.log(formatAlertList((await apiClient.getJson<{ alerts: import("./types.js").HabitatAlert[] }>("/alerts")).alerts)); }
+    catch (error) { console.error(formatApiError(error)); process.exitCode = 1; }
+  });
+  alertCommand.command("acknowledge").description("Acknowledge an operational alert.").argument("<alert-id>", "alert id").action(async (alertId: string) => {
+    try {
+      const response = await apiClient.patchJson<{ alert: import("./types.js").HabitatAlert }>(`/alerts/${encodeURIComponent(alertId)}`, { status: "acknowledged" });
+      console.log(`Alert acknowledged: ${response.alert.id}`);
+    } catch (error) { console.error(formatApiError(error)); process.exitCode = 1; }
+  });
 
   evaCommand.command("status").description("Show EVA status.").action(async () => {
-    try { console.log(JSON.stringify(await apiClient.getJson("/eva/status"), null, 2)); }
+    try { console.log(formatEvaStatus((await apiClient.getJson<{ eva: import("./types.js").HabitatEvaState }>("/eva/status")).eva)); }
     catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
   evaCommand.command("deploy").description("Deploy a human through the basic suitport.").argument("<human-id>", "human id").action(async (humanId: string) => {
-    try { console.log(JSON.stringify((await apiClient.postJson(`/eva/deploy`, { humanId })), null, 2)); }
+    try { console.log(formatEvaStatus((await apiClient.postJson<{ eva: import("./types.js").HabitatEvaState }>(`/eva/deploy`, { humanId })).eva)); }
     catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
   evaCommand.command("move").description("Move the deployed explorer.").argument("<x>", "x coordinate").argument("<y>", "y coordinate").action(async (x: string, y: string) => {
-    try { console.log(JSON.stringify((await apiClient.postJson(`/eva/move`, { x: Number(x), y: Number(y) })), null, 2)); }
+    try { console.log(formatEvaStatus((await apiClient.postJson<{ eva: import("./types.js").HabitatEvaState }>(`/eva/move`, { x: Number(x), y: Number(y) })).eva)); }
     catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
   evaCommand.command("dock").description("Return the explorer through the basic suitport.").action(async () => {
-    try { console.log(JSON.stringify((await apiClient.postJson(`/eva/dock`)), null, 2)); }
+    try { console.log(formatEvaStatus((await apiClient.postJson<{ eva: import("./types.js").HabitatEvaState }>(`/eva/dock`)).eva)); }
     catch (error) { console.error((error as Error).message); process.exitCode = 1; }
   });
 
@@ -239,6 +254,11 @@ export function createProgram(): Command {
     .description("List local Habitat humans.")
     .action(async () => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.getJson<{ humans: import("./types.js").HabitatHuman[] }>("/humans");
+          console.log(formatHumanList(response.humans));
+          return;
+        }
         console.log(formatHumanList(listHumans()));
       } catch (error) {
         console.error((error as Error).message);
@@ -319,17 +339,29 @@ export function createProgram(): Command {
 
   program
     .command("scan")
-    .description("Scan for hidden resources at world coordinates.")
-    .requiredOption("--x <integer>", "current x coordinate", parseIntegerOption("x"))
-    .requiredOption("--y <integer>", "current y coordinate", parseIntegerOption("y"))
+    .description("Scan for hidden resources at the explorer's saved position.")
     .requiredOption("--strength <0-100>", "effective sensor strength", parseBoundedIntegerOption("strength", 0, 100))
     .option("--radius <0-5>", "scan radius, default 0", parseBoundedIntegerOption("radius", 0, 5), 0)
     .option("--json", "print the complete JSON response")
-    .action(async (options: { x: number; y: number; strength: number; radius: number; json?: boolean }) => {
+    .action(async (options: { strength: number; radius: number; json?: boolean }) => {
       try {
-        const path = `/world/scan?x=${options.x}&y=${options.y}&strength=${options.strength}&radius=${options.radius}`;
+        const path = `/world/scan?strength=${options.strength}&radius=${options.radius}`;
         const response = await apiClient.getJson<Record<string, unknown>>(path);
         console.log(options.json ? JSON.stringify(response, null, 2) : formatResourceScan(response));
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("collect")
+    .description("Collect resources at the explorer's saved position.")
+    .argument("<quantity-kg>", "positive whole-number quantity in kilograms", (value) => parsePositiveWholeNumber(value, "quantity-kg"))
+    .action(async (quantityKg: number) => {
+      try {
+        const response = await apiClient.postJson<Record<string, unknown>>("/world/collect", { quantityKg });
+        console.log(formatCollectionResult(response));
       } catch (error) {
         console.error((error as Error).message);
         process.exitCode = 1;
@@ -904,6 +936,14 @@ function parsePositiveNumber(value: string, fieldName: string): number {
     throw new InvalidArgumentError(`${fieldName} must be a non-negative number.`);
   }
 
+  return parsed;
+}
+
+function parsePositiveWholeNumber(value: string, fieldName: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError(`${fieldName} must be a positive whole number.`);
+  }
   return parsed;
 }
 

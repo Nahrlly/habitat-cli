@@ -170,6 +170,8 @@ export type HabitatAlert = {
   message: string;
   createdAt: string;
   updatedAt: string;
+  occurrenceCount?: number;
+  subject?: { type: "human" | "module"; id: string };
   details: Record<string, unknown>;
 };
 

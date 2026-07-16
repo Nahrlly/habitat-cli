@@ -4,6 +4,7 @@ import type {
   ConstructionShortage,
   HabitatConstructionJob,
   HabitatHuman,
+  HabitatEvaState,
   HabitatInventoryState,
   KeplerRegistration,
   HabitatModule,
@@ -400,6 +401,52 @@ export function formatHumanList(humans: HabitatHuman[]): string {
     ["ID", "Name", "Assigned Module", "Status"],
     humans.map((human) => [human.id, human.displayName, human.locationModuleId, human.status]),
   );
+}
+
+export function formatEvaStatus(state: HabitatEvaState): string {
+  const lines = [
+    `Deployed human: ${state.deployedHumanId ?? "none"}`,
+    `Position: ${state.x},${state.y}`,
+    `Carrying: ${state.carriedResources.reduce((total, resource) => total + resource.quantityKg, 0)} / ${state.maxCarryingCapacityKg} kg`,
+  ];
+  if (state.carriedResources.length === 0) {
+    lines.push("Carried resources: none");
+  } else {
+    lines.push("Carried resources:");
+    lines.push(renderTextTable(["Resource", "Quantity (kg)"], state.carriedResources.map((resource) => [resource.resourceId, String(resource.quantityKg)])));
+  }
+  return lines.join("\n");
+}
+
+export function formatAlertList(alerts: import("./types.js").HabitatAlert[]): string {
+  if (alerts.length === 0) return "No alerts.";
+  return renderTextTable(["ID", "Severity", "Status", "Occurrences", "Message"], alerts.map((alert) => [alert.id, alert.severity, alert.status, String(alert.occurrenceCount ?? 1), alert.message]));
+}
+
+export function formatCollectionResult(response: Record<string, unknown>): string {
+  const resource = findNestedString(response, /(resource|material)/i) ?? "material";
+  const quantity = findNestedNumber(response, /(quantity|amount|weight|mass)/i);
+  return quantity === null ? `Collected ${resource}.` : `Collected ${quantity} kg of ${resource}.`;
+}
+
+function findNestedString(value: unknown, keyPattern: RegExp): string | null {
+  if (!value || typeof value !== "object") return null;
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string" && keyPattern.test(key)) return entry;
+    const nested = findNestedString(entry, keyPattern);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findNestedNumber(value: unknown, keyPattern: RegExp): number | null {
+  if (!value || typeof value !== "object") return null;
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "number" && keyPattern.test(key)) return entry;
+    const nested = findNestedNumber(entry, keyPattern);
+    if (nested !== null) return nested;
+  }
+  return null;
 }
 
 export function formatConstructionShortages(shortages: ConstructionShortage[]): string {

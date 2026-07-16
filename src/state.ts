@@ -5,6 +5,7 @@ import {
   type HabitatHuman,
   type HabitatModule,
   type HabitatEvaState,
+  type HabitatCarriedResource,
   type KeplerBlueprint,
   type KeplerHabitat,
   type KeplerRegistration,
@@ -128,6 +129,69 @@ export function saveEvaState(state: HabitatEvaState): void {
   withDatabase((db) => db.query(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg`).run(state.deployedHumanId, state.x, state.y, JSON.stringify(state.carriedResources), state.maxCarryingCapacityKg));
 }
 
+export function dockEvaStateAtomically(
+  humanId: string,
+  suitportModuleId: string,
+  carriedResources: HabitatCarriedResource[],
+): HabitatEvaState {
+  ensureDataDirectory();
+  const next: HabitatEvaState = {
+    deployedHumanId: null,
+    x: 0,
+    y: 0,
+    carriedResources: [],
+    maxCarryingCapacityKg: loadEvaState()?.maxCarryingCapacityKg ?? 20,
+  };
+
+  return withDatabase((db) => db.transaction(() => {
+    const human = db.query("SELECT id FROM habitat_humans WHERE id = ?").get(humanId);
+    if (!human) throw new Error(`Human not found: ${humanId}.`);
+
+    const now = new Date().toISOString();
+    const existingInventory = db.query("SELECT resource_id AS resourceId, display_name AS displayName, quantity, unit, category, source FROM inventory_items").all() as Array<{ resourceId: string; displayName: string; quantity: number; unit: string; category: string; source: string }>;
+    const inventoryById = new Map(existingInventory.map((item) => [normalizeStateResourceId(item.resourceId), item]));
+
+    for (const resource of carriedResources) {
+      if (!resource.resourceId || !Number.isFinite(resource.quantityKg) || resource.quantityKg < 0) {
+        throw new Error("EVA carried resources are invalid.");
+      }
+      const resourceId = normalizeStateResourceId(resource.resourceId);
+      const existing = inventoryById.get(resourceId);
+      const quantity = (existing?.quantity ?? 0) + resource.quantityKg;
+      db.run(
+        `INSERT INTO inventory_items (resource_id, display_name, quantity, unit, category, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(resource_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at`,
+        resourceId,
+        existing?.displayName || deriveStateDisplayName(resourceId),
+        quantity,
+        existing?.unit || "kg",
+        existing?.category || "",
+        existing?.source || "local",
+        now,
+      );
+      inventoryById.set(resourceId, { resourceId, displayName: existing?.displayName || deriveStateDisplayName(resourceId), quantity, unit: existing?.unit || "kg", category: existing?.category || "", source: existing?.source || "local" });
+    }
+
+    db.run("UPDATE habitat_humans SET location_module_id = ? WHERE id = ?", suitportModuleId, humanId);
+    db.run(
+      `INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg)
+       VALUES (1, NULL, 0, 0, '[]', ?)
+       ON CONFLICT(id) DO UPDATE SET deployed_human_id = NULL, x = 0, y = 0, carried_resources_json = '[]'`,
+      next.maxCarryingCapacityKg,
+    );
+    return next;
+  })());
+}
+
+function normalizeStateResourceId(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "resource";
+}
+
+function deriveStateDisplayName(resourceId: string): string {
+  return resourceId.split("-").filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
+}
+
 export function saveHabitatHumans(humans: HabitatHuman[]): void {
   ensureDataDirectory();
   withDatabase((db) => {
@@ -165,8 +229,8 @@ export function saveHabitatAlerts(alerts: HabitatAlert[]): void {
     db.transaction(() => {
       db.run("DELETE FROM habitat_alerts;");
       const insert = db.query(
-        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, details_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, occurrence_count, subject_json, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const alert of alerts) {
         insert.run(
@@ -179,6 +243,8 @@ export function saveHabitatAlerts(alerts: HabitatAlert[]): void {
           alert.message,
           alert.createdAt,
           alert.updatedAt,
+          alert.occurrenceCount ?? 1,
+          alert.subject ? JSON.stringify(alert.subject) : null,
           JSON.stringify(alert.details),
         );
       }
@@ -191,7 +257,7 @@ export function loadHabitatAlerts(): HabitatAlert[] {
   return withDatabase((db) => {
     const rows = db
       .query(
-        `SELECT id, schema_version AS schemaVersion, type, severity, status, source, message, created_at AS createdAt, updated_at AS updatedAt, details_json AS detailsJson
+        `SELECT id, schema_version AS schemaVersion, type, severity, status, source, message, created_at AS createdAt, updated_at AS updatedAt, occurrence_count AS occurrenceCount, subject_json AS subjectJson, details_json AS detailsJson
          FROM habitat_alerts`,
       )
       .all() as Array<{
@@ -204,6 +270,8 @@ export function loadHabitatAlerts(): HabitatAlert[] {
       message: string;
       createdAt: string;
       updatedAt: string;
+      occurrenceCount: number;
+      subjectJson: string | null;
       detailsJson: string;
     }>;
     return rows.map((row) => ({
@@ -216,6 +284,8 @@ export function loadHabitatAlerts(): HabitatAlert[] {
       message: row.message,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      ...(row.source === "habitat-local" ? { occurrenceCount: row.occurrenceCount } : {}),
+      ...(row.subjectJson ? { subject: JSON.parse(row.subjectJson) } : {}),
       details: JSON.parse(row.detailsJson),
     }));
   });
@@ -327,8 +397,8 @@ export function saveState(registration: KeplerRegistration): void {
       }
 
       const alertInsert = db.query(
-        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, details_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, occurrence_count, subject_json, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const alert of registration.alerts) {
         alertInsert.run(
@@ -341,6 +411,8 @@ export function saveState(registration: KeplerRegistration): void {
           alert.message,
           alert.createdAt,
           alert.updatedAt,
+          alert.occurrenceCount ?? 1,
+          alert.subject ? JSON.stringify(alert.subject) : null,
           JSON.stringify(alert.details),
         );
       }

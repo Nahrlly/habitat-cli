@@ -86,9 +86,13 @@ function initializeSchema(db: Database): void {
       message TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      subject_json TEXT,
       details_json TEXT NOT NULL
     );
   `);
+  ensureColumn(db, "habitat_alerts", "occurrence_count", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "habitat_alerts", "subject_json", "TEXT");
   db.run(`
     CREATE TABLE IF NOT EXISTS habitat_modules (
       id TEXT PRIMARY KEY,
