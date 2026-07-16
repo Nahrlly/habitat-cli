@@ -22,8 +22,27 @@ import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.j
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
 import { createOperationalAlert } from "./alerts-domain.js";
+import { addRealtimeClient, removeRealtimeClient, type HabitatRealtimeSnapshot } from "./realtime.js";
 
 export const app = new Hono();
+
+export function buildRealtimeSnapshot(): HabitatRealtimeSnapshot {
+  const registration = loadKeplerRegistration();
+  return {
+    registration,
+    modules: registration?.modules ?? [],
+    humans: listHumans(),
+    solar: null,
+    power: null,
+    powerHistory: loadPowerHistory(),
+    alerts: registration?.alerts ?? [],
+  };
+}
+
+function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>[0]): void {
+  const snapshot = buildRealtimeSnapshot();
+  client.send(JSON.stringify({ type: "snapshot", snapshot, emittedAt: new Date().toISOString() }));
+}
 
 app.use("*", async (c, next) => {
   const startedAt = Date.now();
@@ -42,6 +61,8 @@ app.get("/health", (c) => {
     service: "habitat-backend",
   });
 });
+
+app.get("/ws", (c) => c.text("WebSocket upgrade required.", 426));
 
 app.get("/registration", (c) => {
   const registration = loadKeplerRegistration();
@@ -788,7 +809,22 @@ if (import.meta.main) {
   Bun.serve({
     hostname: host,
     port,
-    fetch: app.fetch,
+    fetch(request, server) {
+      if (new URL(request.url).pathname === "/ws" && server.upgrade(request)) {
+        return undefined;
+      }
+      return app.fetch(request);
+    },
+    websocket: {
+      open(client) {
+        addRealtimeClient(client);
+        sendRealtimeSnapshot(client);
+      },
+      message() {},
+      close(client) {
+        removeRealtimeClient(client);
+      },
+    },
   });
 }
 

@@ -5,6 +5,7 @@ import {
   removeRealtimeClient,
   type HabitatRealtimeSnapshot,
 } from "./realtime.js";
+import { app, buildRealtimeSnapshot } from "./server.js";
 
 const snapshot: HabitatRealtimeSnapshot = {
   registration: null,
@@ -48,5 +49,22 @@ describe("realtime client registry", () => {
     broadcastRealtimeSnapshot(snapshot);
 
     expect(sends).toBe(1);
+  });
+});
+
+describe("dashboard WebSocket endpoint", () => {
+  test("rejects a non-upgrade request with an upgrade-required response", async () => {
+    const response = await app.fetch(new Request("http://localhost/ws"));
+
+    expect(response.status).toBe(426);
+    expect(await response.text()).toBe("WebSocket upgrade required.");
+  });
+
+  test("builds an unregistered snapshot without requiring a habitat", () => {
+    const snapshot = buildRealtimeSnapshot();
+    expect(snapshot.registration === null || typeof snapshot.registration === "object").toBe(true);
+    expect(Array.isArray(snapshot.modules)).toBe(true);
+    expect(Array.isArray(snapshot.humans)).toBe(true);
+    expect(Array.isArray(snapshot.alerts)).toBe(true);
   });
 });
