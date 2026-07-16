@@ -8,7 +8,7 @@ import {
   startResourceMission,
   updateResourceMission,
 } from "./resource-mission-state.js";
-import type { ResourceMission, ResourceMissionCollectedResource, ResourceMissionEvaSnapshot, ResourceMissionReport, ResourceMissionStopReason } from "./resource-mission.js";
+import type { ResourceMission, ResourceMissionCollectedResource, ResourceMissionEvaSnapshot, ResourceMissionIteration, ResourceMissionReport, ResourceMissionStopReason } from "./resource-mission.js";
 import type { HabitatEvaState, HabitatHuman } from "./types.js";
 
 export type ResourceMissionApi = {
@@ -28,6 +28,13 @@ export type ResourceMissionDecisionContext = {
   legalActions: ResourceMissionAction[];
 };
 
+export type ResourceMissionPlanContext = ResourceMissionDecisionContext & {
+  maxPlanSteps: number;
+  recentIterations: ResourceMissionIteration[];
+};
+
+export type ResourceMissionPlanner = (context: ResourceMissionPlanContext) => Promise<ResourceMissionAction[]>;
+
 export type ResourceMissionController = {
   start(): Promise<ResourceMission>;
   resumeActiveMission(seed: Pick<ResourceMission, "id" | "humanId">): Promise<ResourceMission>;
@@ -43,10 +50,14 @@ const DEFAULT_SCAN_RADIUS = 1;
 export function createResourceMissionController(input: {
   api: ResourceMissionApi;
   decide?: (context: ResourceMissionDecisionContext) => Promise<ResourceMissionAction>;
+  plan?: ResourceMissionPlanner;
+  maxPlanSteps?: number;
   delayMs?: number;
 }): ResourceMissionController {
   const loops = new Map<string, Promise<void>>();
   const decide = input.decide ?? (async ({ legalActions }) => legalActions[0]!);
+  const maxPlanSteps = input.maxPlanSteps ?? 12;
+  const plan = input.plan ?? (async (context: ResourceMissionPlanContext) => [await decide(context)]);
   const delayMs = input.delayMs ?? 100;
 
   async function start(): Promise<ResourceMission> {
@@ -126,34 +137,54 @@ export function createResourceMissionController(input: {
       const legalActions = candidates.filter((action) => evaluateResourceMissionAction(snapshot, action).allowed);
       if (!legalActions.length) return finishAfterReturn(mission, "no-safe-action", "completed");
 
-      let action: ResourceMissionAction;
+      let actions: ResourceMissionAction[];
       try {
-        action = await decide({ mission, snapshot, legalActions });
+        actions = await plan({
+          mission,
+          snapshot,
+          legalActions,
+          maxPlanSteps,
+          recentIterations: (loadResourceMissionReport(mission.id)?.iterations ?? []).slice(-8),
+        });
       } catch (error) {
         return finishAfterReturn(mission, "dependency-failure", "failed", errorMessage(error));
       }
-      if (!legalActions.some((candidate) => sameAction(candidate, action))) {
-        return finishAfterReturn(mission, "no-safe-action", "completed", "Decision bridge selected an action outside Habitat's legal action set.");
+      if (!actions.length || actions.length > maxPlanSteps) {
+        return finishAfterReturn(mission, "no-safe-action", "completed", "Decision bridge returned an invalid trip plan.");
       }
 
-      updateResourceMission(mission.id, { currentAction: action.type });
-      const before = snapshot.eva;
-      try {
-        const result = await execute(action);
-        const after = (await input.api.evaStatus()).eva;
-        appendResourceMissionIteration({
-          missionId,
-          action: action.type,
-          actionInput: actionInput(action),
-          scan: action.type === "scan" ? result : undefined,
-          collectedResources: action.type === "collect" ? collectedDelta(before, after) : undefined,
-          evaSnapshot: snapshotEva(after),
-        });
-        failures = 0;
-      } catch (error) {
-        failures += 1;
-        appendResourceMissionIteration({ missionId, action: action.type, actionInput: actionInput(action), error: errorMessage(error), evaSnapshot: snapshotEva(before) });
-        if (failures >= 2) return finishAfterReturn(mission, "dependency-failure", "failed", errorMessage(error));
+      for (const action of actions) {
+        const active = loadActiveResourceMission();
+        if (!active || active.id !== missionId) return;
+        const stepSnapshot = await loadSnapshot(input.api);
+        const stepStopReason = resourceStopReason(active, stepSnapshot);
+        if (stepStopReason) return finishAfterReturn(active, stepStopReason, "completed");
+        if (!evaluateResourceMissionAction(stepSnapshot, action).allowed) break;
+
+        updateResourceMission(mission.id, { currentAction: action.type });
+        const before = stepSnapshot.eva;
+        try {
+          const result = await execute(action);
+          const after = (await input.api.evaStatus()).eva;
+          appendResourceMissionIteration({
+            missionId,
+            action: action.type,
+            actionInput: actionInput(action),
+            scan: action.type === "scan" ? result : undefined,
+            collectedResources: action.type === "collect" ? collectedDelta(before, after) : undefined,
+            evaSnapshot: snapshotEva(after),
+          });
+          failures = 0;
+          if (action.type === "scan") break;
+          const afterSnapshot = { ...stepSnapshot, eva: after };
+          const afterStopReason = resourceStopReason(active, afterSnapshot);
+          if (afterStopReason) return finishAfterReturn(active, afterStopReason, "completed");
+        } catch (error) {
+          failures += 1;
+          appendResourceMissionIteration({ missionId, action: action.type, actionInput: actionInput(action), error: errorMessage(error), evaSnapshot: snapshotEva(before) });
+          if (failures >= 2) return finishAfterReturn(active, "dependency-failure", "failed", errorMessage(error));
+          break;
+        }
       }
       await pause(delayMs);
     }

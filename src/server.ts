@@ -28,10 +28,10 @@ import { ClockEventManager } from "./clock-events.js";
 import { loadClockState } from "./clock-state.js";
 import { createResourceMissionController, type ResourceMissionApi } from "./resource-mission-controller.js";
 import { loadActiveResourceMission } from "./resource-mission-state.js";
-import { createOpenClawResourceDecision } from "./openclaw-resource-decision.js";
+import { createOpenClawResourcePlanner } from "./openclaw-resource-decision.js";
 
 export const app = new Hono();
-const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi(), decide: createOpenClawResourceDecision() });
+const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi(), plan: createOpenClawResourcePlanner() });
 
 export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> {
   const registration = loadKeplerRegistration();

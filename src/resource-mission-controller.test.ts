@@ -60,16 +60,39 @@ describe("resource mission controller", () => {
     expect(harness.calls).toEqual(["move:0:0", "dock"]);
     expect(controller.report()).toMatchObject({ status: "completed", stopReason: "operator-requested" });
   });
+
+  test("executes multiple actions from one OpenClaw trip plan before replanning", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ maxCarryingCapacityKg: 5 });
+    let planCalls = 0;
+    const controller = createResourceMissionController({
+      api: harness.api,
+      delayMs: 0,
+      plan: async () => {
+        planCalls += 1;
+        return planCalls === 1
+          ? [{ type: "deploy", humanId: "human-1" }, { type: "scan", strength: 50, radius: 1 }]
+          : [{ type: "move", x: 1, y: 0 }, { type: "collect", quantityKg: 3 }, { type: "move", x: 0, y: 0 }, { type: "collect", quantityKg: 2 }];
+      },
+    });
+
+    const mission = await controller.start();
+    await controller.waitForCompletion(mission.id);
+
+    expect(planCalls).toBe(2);
+    expect(harness.calls).toEqual(["deploy", "scan:50:1", "move:1:0", "collect:3", "move:0:0", "collect:2", "dock"]);
+    expect(controller.report()).toMatchObject({ status: "completed", stopReason: "capacity-reached" });
+  });
 });
 
-function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number }> = {}) {
+function createHarness(initial: Partial<{ deployedHumanId: string | null; x: number; y: number; suitBattery: number; suitOxygen: number; carriedKg: number; maxCarryingCapacityKg: number }> = {}) {
   const calls: string[] = [];
   const eva = {
     deployedHumanId: initial.deployedHumanId ?? null,
     x: initial.x ?? 0,
     y: initial.y ?? 0,
     carriedResources: initial.carriedKg ? [{ resourceId: "ice", quantityKg: initial.carriedKg }] : [],
-    maxCarryingCapacityKg: 1,
+    maxCarryingCapacityKg: initial.maxCarryingCapacityKg ?? 1,
     suitBattery: initial.suitBattery ?? 100,
     maxSuitBattery: 100,
     suitOxygen: initial.suitOxygen ?? 100,
@@ -82,7 +105,7 @@ function createHarness(initial: Partial<{ deployedHumanId: string | null; x: num
     bounds: async () => ({ minX: -2, maxX: 2, minY: -2, maxY: 2 }),
     deploy: async (humanId: string) => { calls.push("deploy"); eva.deployedHumanId = humanId; },
     scan: async (strength: number, radius: number) => { calls.push(`scan:${strength}:${radius}`); return { scan: { tiles: [] } }; },
-    collect: async (quantityKg: number) => { calls.push(`collect:${quantityKg}`); eva.carriedResources = [{ resourceId: "ice", quantityKg }]; return { resourceId: "ice", quantityKg }; },
+    collect: async (quantityKg: number) => { calls.push(`collect:${quantityKg}`); const current = eva.carriedResources[0]?.quantityKg ?? 0; eva.carriedResources = [{ resourceId: "ice", quantityKg: current + quantityKg }]; return { resourceId: "ice", quantityKg }; },
     move: async (x: number, y: number) => { calls.push(`move:${x}:${y}`); eva.x = x; eva.y = y; },
     dock: async () => { calls.push("dock"); eva.deployedHumanId = null; },
   };
