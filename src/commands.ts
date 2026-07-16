@@ -98,6 +98,11 @@ export function createProgram(): Command {
         console.log(`Kepler status: ${habitat.status}`);
         console.log(`Last seen at: ${habitat.lastSeenAt ?? "unknown"}`);
         console.log(`Modules created: ${formatModuleSummary(registration)}`);
+        const batteries = registration.modules.filter((module) => module.capabilities.includes("power-storage"));
+        if (batteries.length > 0) {
+          const charge = batteries.reduce((total, module) => total + Number(module.runtimeAttributes.currentEnergyKwh ?? module.runtimeAttributes.energyKwh ?? 0), 0);
+          console.log(`Battery charge: ${charge.toFixed(1)} kWh.`);
+        }
       } catch (error) {
         console.error(formatRecentCommandError(error, "Human move"));
         process.exitCode = 1;
@@ -522,6 +527,17 @@ export function createProgram(): Command {
     .description("Show the current power sources and sinks.")
     .action(async () => {
       try {
+        if (remoteModeEnabled()) {
+          const registration = await apiClient.getJson<KeplerRegistration>("/registration");
+          const power = await apiClient.getJson<{ generationKw: number; consumptionKw: number; netKw: number; solarIrradiance: { wPerM2: number; condition?: string } }>("/power/overview");
+          console.log(`Generation: ${power.generationKw.toFixed(2)} kW.`);
+          console.log(`Consumption: ${power.consumptionKw.toFixed(2)} kW.`);
+          console.log(`Net: ${power.netKw.toFixed(2)} kW.`);
+          const batteries = registration.modules.filter((module) => module.capabilities.includes("power-storage"));
+          const charge = batteries.reduce((total, module) => total + Number(module.runtimeAttributes.currentEnergyKwh ?? module.runtimeAttributes.energyKwh ?? 0), 0);
+          console.log(`Battery charge: ${charge.toFixed(1)} kWh.`);
+          return;
+        }
         const registration = loadStateOrFail();
         const solarResponse = normalizeSolarStatus(
           await apiClient.getJson<Record<string, unknown> | { solarIrradiance?: Record<string, unknown> }>("/solar/status"),
