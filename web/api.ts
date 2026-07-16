@@ -19,6 +19,7 @@ export const habitatApi = {
   registration: () => request<Registration>("/registration"),
   modules: () => request<{ modules: Registration["modules"] }>("/modules"),
   humans: () => request<{ humans: Human[] }>("/humans"),
+  moveHuman: (humanId: string, moduleId: string) => request<{ human: Human }>(`/humans/${encodeURIComponent(humanId)}/move`, { method: "POST", body: JSON.stringify({ moduleId }) }),
   module: (selector: string) => request<{ module: Registration["modules"][number]; construction: Record<string, unknown> | null }>(`/modules/${encodeURIComponent(selector)}`),
   solar: () => request<SolarStatus>("/solar/status"),
   power: () => request<PowerOverview>("/power/overview"),
