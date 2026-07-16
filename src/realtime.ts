@@ -1,5 +1,5 @@
 import type { ServerWebSocket } from "bun";
-import type { HabitatAlert, HabitatHuman, HabitatModule, KeplerRegistration } from "./types.js";
+import type { HabitatAlert, HabitatClockState, HabitatHuman, HabitatModule, KeplerRegistration } from "./types.js";
 import type { KeplerSolarIrradiance } from "./kepler-catalog.js";
 import type { PowerHistoryPoint } from "./power-history.js";
 
@@ -26,6 +26,7 @@ export type HabitatRealtimeSnapshot = {
   power: PowerOverviewResponse | null;
   powerHistory: PowerHistoryPoint[];
   alerts: HabitatAlert[];
+  clock: HabitatClockState | null;
 };
 
 export type HabitatRealtimeEvent =

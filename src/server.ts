@@ -57,6 +57,7 @@ export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> 
     power,
     powerHistory: loadPowerHistory(),
     alerts: registration?.alerts ?? [],
+    clock: loadClockState(),
   };
 }
 
