@@ -84,6 +84,39 @@ describe("resource mission controller", () => {
     expect(controller.report()).toMatchObject({ status: "completed", stopReason: "capacity-reached" });
   });
 
+  test("persists the visible OpenClaw response as a plan iteration", async () => {
+    useTemporaryDatabase();
+    const harness = createHarness({ maxCarryingCapacityKg: 1 });
+    let planCalls = 0;
+    const controller = createResourceMissionController({
+      api: harness.api,
+      delayMs: 0,
+      plan: async ({ snapshot }) => {
+        planCalls += 1;
+        const actions = !snapshot.eva.deployedHumanId
+          ? [{ type: "deploy", humanId: "human-1" }]
+          : planCalls === 2
+            ? [{ type: "scan", strength: 50, radius: 1 }]
+            : planCalls === 3
+              ? [{ type: "move", x: 1, y: 0 }]
+              : [{ type: "collect", quantityKg: 1 }];
+        return { actions, responseText: JSON.stringify(actions), source: "openclaw" };
+      },
+    });
+
+    const mission = await controller.start();
+    await controller.waitForCompletion(mission.id);
+
+    expect(controller.report()?.iterations).toContainEqual(expect.objectContaining({
+      action: "plan",
+      actionInput: {
+        source: "openclaw",
+        responseText: '[{"type":"deploy","humanId":"human-1"}]',
+        actions: [{ type: "deploy", humanId: "human-1" }],
+      },
+    }));
+  });
+
   test("returns and docks when bounds telemetry fails after EVA leaves origin", async () => {
     useTemporaryDatabase();
     const harness = createHarness({ boundsFailureAt: { x: 1, y: 0 } });

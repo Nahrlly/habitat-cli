@@ -33,7 +33,13 @@ export type ResourceMissionPlanContext = ResourceMissionDecisionContext & {
   recentIterations: ResourceMissionIteration[];
 };
 
-export type ResourceMissionPlanner = (context: ResourceMissionPlanContext) => Promise<ResourceMissionAction[]>;
+export type ResourceMissionPlanResult = {
+  actions: ResourceMissionAction[];
+  responseText?: string;
+  source?: string;
+};
+
+export type ResourceMissionPlanner = (context: ResourceMissionPlanContext) => Promise<ResourceMissionAction[] | ResourceMissionPlanResult>;
 
 export type ResourceMissionController = {
   start(): Promise<ResourceMission>;
@@ -139,25 +145,45 @@ export function createResourceMissionController(input: {
       if (!legalActions.length) return finishAfterReturn(mission, "no-safe-action", "completed");
 
       let actions: ResourceMissionAction[];
+      let responseText: string | undefined;
+      let planSource: string | undefined;
       try {
-        actions = await plan({
+        const planned = await plan({
           mission,
           snapshot,
           legalActions,
           maxPlanSteps,
           recentIterations: (loadResourceMissionReport(mission.id)?.iterations ?? []).slice(-8),
         });
+        if (Array.isArray(planned)) {
+          actions = planned;
+        } else {
+          actions = planned.actions;
+          responseText = planned.responseText;
+          planSource = planned.source;
+        }
       } catch (error) {
         const planningError = errorMessage(error);
         appendResourceMissionIteration({ missionId, action: "plan", error: planningError });
         if (!input.fallbackPlanOnError) return finishAfterReturn(mission, "dependency-failure", "failed", planningError);
         actions = [legalActions[0]!];
       }
-      if (!actions.length || actions.length > maxPlanSteps) {
+      if (!Array.isArray(actions) || !actions.length || actions.length > maxPlanSteps) {
         const planningError = "Decision bridge returned an invalid trip plan.";
         appendResourceMissionIteration({ missionId, action: "plan", error: planningError });
         if (!input.fallbackPlanOnError) return finishAfterReturn(mission, "no-safe-action", "completed", planningError);
         actions = [legalActions[0]!];
+      }
+      if (responseText) {
+        appendResourceMissionIteration({
+          missionId,
+          action: "plan",
+          actionInput: {
+            source: planSource ?? "planner",
+            responseText,
+            actions: actions.map((action) => ({ type: action.type, ...actionInput(action) })),
+          },
+        });
       }
 
       for (const action of actions) {

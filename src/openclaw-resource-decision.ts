@@ -1,5 +1,5 @@
 import type { ResourceMissionAction } from "./autonomy-policy.js";
-import type { ResourceMissionDecisionContext, ResourceMissionPlanContext } from "./resource-mission-controller.js";
+import type { ResourceMissionDecisionContext, ResourceMissionPlanContext, ResourceMissionPlanResult } from "./resource-mission-controller.js";
 
 type OpenClawRunResult = { status: string; result?: { finalAssistantVisibleText?: string; payloads?: Array<{ text?: string }> } };
 
@@ -41,7 +41,7 @@ export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionO
   const runAgent = options.runAgent ?? ((args) => runOpenClawAgent(binary, args));
   const maxPlanSteps = options.maxPlanSteps ?? Number(process.env.OPENCLAW_MISSION_MAX_PLAN_STEPS ?? 12);
 
-  return async function plan(context: ResourceMissionPlanContext): Promise<ResourceMissionAction[]> {
+  return async function plan(context: ResourceMissionPlanContext): Promise<ResourceMissionPlanResult> {
     const message = [
       "You are the decision layer for one whole bounded Habitat resource-mission trip segment.",
       "Return exactly one JSON array of primitive actions, in execution order, with no markdown.",
@@ -58,7 +58,8 @@ export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionO
       }),
     ].join("\n");
     const raw = await runAgent({ sessionId: `habitat-resource-mission-${context.mission.id}`, message, timeoutSeconds });
-    return parseOpenClawPlan(raw, maxPlanSteps);
+    const responseText = extractAssistantText(raw);
+    return { ...parseOpenClawPlan(responseText, maxPlanSteps), responseText };
   };
 
 }
@@ -88,13 +89,12 @@ function parseOpenClawAction(raw: string): ResourceMissionAction {
   }
 }
 
-function parseOpenClawPlan(raw: string, maxPlanSteps: number): ResourceMissionAction[] {
-  const text = extractAssistantText(raw);
+function parseOpenClawPlan(text: string, maxPlanSteps: number): { actions: ResourceMissionAction[] } {
   try {
     const parsed = parseJsonResponse(text);
     const plan = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.plan) ? parsed.plan : null;
     if (!Array.isArray(plan) || plan.length === 0 || plan.length > maxPlanSteps || plan.some((action) => action && typeof action === "object" && action.type === "dock")) throw new Error();
-    return plan.map(parseActionValue);
+    return { actions: plan.map(parseActionValue) };
   } catch {
     throw new Error("OpenClaw returned an invalid bounded trip plan.");
   }

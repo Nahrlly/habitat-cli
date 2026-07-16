@@ -25,11 +25,14 @@ describe("OpenClaw resource decision", () => {
       expect(message).toContain("whole bounded");
       return JSON.stringify({ status: "ok", result: { finalAssistantVisibleText: '[{"type":"scan","strength":50,"radius":1},{"type":"move","x":1,"y":0},{"type":"collect","quantityKg":5}]' } });
     } });
-    await expect(plan(context)).resolves.toEqual([
-      { type: "scan", strength: 50, radius: 1 },
-      { type: "move", x: 1, y: 0 },
-      { type: "collect", quantityKg: 5 },
-    ]);
+    await expect(plan(context)).resolves.toEqual({
+      actions: [
+        { type: "scan", strength: 50, radius: 1 },
+        { type: "move", x: 1, y: 0 },
+        { type: "collect", quantityKg: 5 },
+      ],
+      responseText: '[{"type":"scan","strength":50,"radius":1},{"type":"move","x":1,"y":0},{"type":"collect","quantityKg":5}]',
+    });
   });
 
   test("rejects a plan that tries to return or exceeds the step limit", async () => {
@@ -39,9 +42,12 @@ describe("OpenClaw resource decision", () => {
 
   test("accepts a JSON plan wrapped in a fenced response", async () => {
     const plan = createOpenClawResourcePlanner({ runAgent: async () => JSON.stringify({ status: "ok", result: { finalAssistantVisibleText: '```json\n{"plan":[{"type":"scan","strength":50,"radius":1},{"type":"collect","quantityKg":5}]}\n```' } }) });
-    await expect(plan(context)).resolves.toEqual([
-      { type: "scan", strength: 50, radius: 1 },
-      { type: "collect", quantityKg: 5 },
-    ]);
+    await expect(plan(context)).resolves.toMatchObject({
+      actions: [
+        { type: "scan", strength: 50, radius: 1 },
+        { type: "collect", quantityKg: 5 },
+      ],
+      responseText: '```json\n{"plan":[{"type":"scan","strength":50,"radius":1},{"type":"collect","quantityKg":5}]}\n```',
+    });
   });
 });
