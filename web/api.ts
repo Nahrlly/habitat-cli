@@ -1,7 +1,7 @@
 export type Registration = {
   displayName: string;
   habitat?: { displayName?: string; status?: string };
-  modules: Array<{ id: string; selector: string; blueprintId: string; displayName: string; connectedTo: string[]; capabilities: string[]; runtimeAttributes: Record<string, unknown> }>;
+  modules: Array<{ id: string; selector: string; blueprintId: string; displayName: string; connectedTo: string[]; capabilities: string[]; runtimeAttributes: Record<string, unknown>; statusOptions?: string[] }>;
 };
 
 export type SolarStatus = { solarIrradiance: { wPerM2: number; condition?: string } };

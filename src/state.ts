@@ -479,6 +479,12 @@ export function setModuleStatus(registration: KeplerRegistration, moduleId: stri
   };
 }
 
+export function getModuleStatusOptions(module: HabitatModule): string[] {
+  const options = ["online", "offline"];
+  if (module.blueprintId === "basic-suitport" || module.blueprintId === "workshop-fabricator") options.push("active");
+  return options;
+}
+
 function validateRegistrationPersistence(registration: KeplerRegistration): void {
   if (!Array.isArray(registration.modules) || !Array.isArray(registration.humans)) {
     throw new Error("Registration modules and humans must be arrays.");
