@@ -43,7 +43,7 @@ export function BlueprintView() {
       return matchesFilter && matchesQuery;
     });
   }, [blueprints, filter, pinned, query]);
-  const selected = blueprints.find((blueprint) => blueprint.blueprintId === selectedId) ?? visible[0] ?? null;
+  const selected = visible.find((blueprint) => blueprint.blueprintId === selectedId) ?? visible[0] ?? null;
   const inventoryById = new Map(inventory.map((item) => [item.resourceId, item]));
 
   function togglePinned(id: string) {

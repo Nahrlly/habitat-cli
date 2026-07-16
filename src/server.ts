@@ -27,6 +27,7 @@ import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type 
 import { ClockEventManager } from "./clock-events.js";
 import { loadClockState } from "./clock-state.js";
 import { createResourceMissionController, type ResourceMissionApi } from "./resource-mission-controller.js";
+import { loadActiveResourceMission } from "./resource-mission-state.js";
 import { createOpenClawResourceDecision } from "./openclaw-resource-decision.js";
 
 export const app = new Hono();
@@ -990,6 +991,13 @@ if (import.meta.main) {
   console.log(`Habitat backend listening on http://${host}:${port}`);
 
   clockManager.start();
+
+  const activeMission = loadActiveResourceMission();
+  if (activeMission) {
+    void resourceMissionController.resumeActiveMission(activeMission).catch((error) => {
+      console.error(`[habitat] unable to resume resource mission ${activeMission.id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
 
   Bun.serve({
     hostname: host,
