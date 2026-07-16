@@ -14,7 +14,7 @@ git pull --ff-only
 
 NEXT_DIST="$DEPLOY_DIR/.dist-next"
 rm -rf "$NEXT_DIST"
-VITE_OUT_DIR="$NEXT_DIST" ~/.bun/bin/bun run web:build
+VITE_OUT_DIR=".dist-next" ~/.bun/bin/bun run web:build
 if [[ ! -f "$NEXT_DIST/index.html" ]]; then
   echo "Frontend build did not produce index.html." >&2
   exit 1
