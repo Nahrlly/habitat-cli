@@ -15,7 +15,7 @@ import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStat
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
-import { advanceConstruction, loadConstructionState, saveConstructionState } from "./construction-state.js";
+import { advanceConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { assertModuleCanBeDeleted, createHuman, deleteHuman, listHumans, moveHuman, updateHuman } from "./human-domain.js";
 import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds } from "./eva-domain.js";
 import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
@@ -534,6 +534,22 @@ app.post("/commands/tick", async (c) => {
   } catch (error) {
     return friendlyError(c, error);
   }
+});
+
+app.post("/commands/construct", async (c) => {
+  const registration = loadKeplerRegistration();
+  if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
+  const body = (await c.req.json().catch(() => null)) as { blueprintId?: string; dryRun?: boolean } | null;
+  const blueprint = registration.blueprints.find((candidate) => candidate.blueprintId === body?.blueprintId);
+  if (!blueprint) return c.json({ error: `Blueprint not found: ${body?.blueprintId ?? ""}.` }, 404);
+  const result = startConstruction({ blueprint, modules: registration.modules, dryRun: body?.dryRun ?? false });
+  if (result.startedJob?.ticksRemaining === 0) {
+    const completedModule = createConstructedModule(registration, result.startedJob);
+    saveState({ ...registration, modules: [...registration.modules, completedModule] });
+    saveConstructionState({ activeJob: null });
+    return c.json({ ...result, completedModule });
+  }
+  return c.json(result);
 });
 
 app.get("/catalog/blueprints", async (c) => {

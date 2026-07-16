@@ -53,6 +53,10 @@ let apiClient = createApiClient();
 let keplerBaseUrl = "";
 let keplerPlanetToken = "";
 
+function remoteModeEnabled(): boolean {
+  return process.env.HABITAT_REMOTE_MODE === "1";
+}
+
 export function createProgram(): Command {
   const program = new Command();
   apiClient = createApiClient();
@@ -65,6 +69,11 @@ export function createProgram(): Command {
     .requiredOption("--name <name>", "habitat name")
     .action(async (options: { name: string }) => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.postJson<{ registration: KeplerRegistration }>("/commands/register", { name: options.name });
+          console.log(`Registered habitat ${response.registration.displayName}.`);
+          return;
+        }
         const registration = await registerWithKepler(options.name);
         saveState(registration);
         console.log(`Registered habitat ${registration.displayName}.`);
@@ -102,6 +111,17 @@ export function createProgram(): Command {
     .argument("[unit]", "seconds or hours")
     .action(async (unit: string | undefined, options: { ticks: number }) => {
       try {
+        if (remoteModeEnabled()) {
+          const tickCount = Math.floor(options.ticks) * parseTickUnit(unit);
+          if (tickCount <= 0) throw new Error("ticks must be greater than zero.");
+          const response = await apiClient.postJson<{ totalPowerDraw: number; totalSolarGeneration: number; batteryBefore: number; batteryAfter: number; solarChargeReason?: string }>("/commands/tick", { ticks: tickCount });
+          console.log(`Advanced ${Math.floor(options.ticks)} tick(s) at ${parseTickUnit(unit)} second(s) per tick.`);
+          console.log(`Total power draw: ${formatEnergyCost(response.totalPowerDraw)} kWh.`);
+          console.log(`Total solar generation: ${formatEnergyCost(response.totalSolarGeneration)} kWh.`);
+          console.log(`Battery charge: ${response.batteryBefore} kWh -> ${response.batteryAfter} kWh.`);
+          if (response.solarChargeReason) console.log(response.solarChargeReason);
+          return;
+        }
         const registration = loadStateOrFail();
         const tickCount = Math.floor(options.ticks);
         const secondsPerTick = parseTickUnit(unit);
@@ -167,6 +187,11 @@ export function createProgram(): Command {
     .description("Unregister this Habitat CLI from Kepler.")
     .action(async () => {
       try {
+        if (remoteModeEnabled()) {
+          await apiClient.postJson<{ ok: true }>("/commands/unregister");
+          console.log("Habitat unregistered.");
+          return;
+        }
         clearLocalHabitatState();
         clearPowerHistory();
         console.log("Habitat unregistered.");
@@ -307,6 +332,11 @@ export function createProgram(): Command {
     .description("List local habitat inventory.")
     .action(async () => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.getJson<{ inventory: ReturnType<typeof loadInventoryState> }>("/inventory");
+          console.log(formatInventoryList(response.inventory));
+          return;
+        }
         console.log(formatInventoryList(loadInventoryState()));
       } catch (error) {
         console.error((error as Error).message);
@@ -332,6 +362,14 @@ export function createProgram(): Command {
       },
     ) => {
         try {
+          if (remoteModeEnabled()) {
+            const response = await apiClient.postJson<{ item: ReturnType<typeof setInventoryQuantity> }>("/inventory/set", {
+              resourceId: parseNonEmptyString(resourceId, "resource id"), quantity, displayName: options.name, unit: options.unit, category: options.category,
+            });
+            const item = response.item;
+            console.log(`Inventory set: ${item.resourceId} = ${item.quantity}${item.unit ? ` ${item.unit}` : ""}.`);
+            return;
+          }
           const item = setInventoryQuantity({
             resourceId: parseNonEmptyString(resourceId, "resource id"),
             quantity,
@@ -420,6 +458,14 @@ export function createProgram(): Command {
       },
     ) => {
         try {
+          if (remoteModeEnabled()) {
+            const response = await apiClient.postJson<{ item: ReturnType<typeof addInventoryQuantity> }>("/inventory/add", {
+              resourceId: parseNonEmptyString(resourceId, "resource id"), amount, displayName: options.name, unit: options.unit, category: options.category,
+            });
+            const item = response.item;
+            console.log(`Inventory added: ${item.resourceId} = ${item.quantity}${item.unit ? ` ${item.unit}` : ""}.`);
+            return;
+          }
           const item = addInventoryQuantity({
             resourceId: parseNonEmptyString(resourceId, "resource id"),
             amount,
@@ -494,6 +540,12 @@ export function createProgram(): Command {
     .argument("<status>", "offline, idle, online, active, or damaged")
     .action(async (moduleId: string, status: string) => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.patchJson<{ module: HabitatModule }>(`/modules/${encodeURIComponent(moduleId)}/status`, { status: parseModuleStatus(status) });
+          const nextModule = response.module;
+          console.log(`Module ${nextModule.selector} status set to ${getDeclaredModuleStatus(nextModule)}; current power draw ${formatPowerDraw(getModulePowerDraw(nextModule))} kW.`);
+          return;
+        }
         const registration = loadStateOrFail();
         const module = resolveModule(registration, moduleId);
         const nextRegistration = setModuleStatus(registration, module.id, parseModuleStatus(status));
@@ -997,6 +1049,18 @@ function stripBlueprintSuffix(displayName: string): string {
 function createConstructAction(): (blueprintId: string, options: { dryRun?: boolean }) => void {
   return (blueprintId: string, options: { dryRun?: boolean }) => {
     try {
+      if (remoteModeEnabled()) {
+        void apiClient.postJson<{ report: { canStart: boolean }; startedJob: { pendingModuleName: string; consumedInputs: Array<{ resourceId: string; amount: number }>; ticksRemaining: number } | null; completedModule?: HabitatModule }>("/commands/construct", { blueprintId, dryRun: options.dryRun ?? false }).then((response) => {
+          if (!response.report.canStart) {
+            console.log("Construction requirements are not satisfied.");
+            process.exitCode = 1;
+            return;
+          }
+          if (options.dryRun || !response.startedJob) return;
+          console.log(`Construction started for ${response.startedJob.pendingModuleName}. Consumed ${response.startedJob.consumedInputs.map((input) => `${input.resourceId}: ${input.amount}`).join(", ") || "no resources"}. ${response.startedJob.ticksRemaining} tick(s) remaining.`);
+        }).catch((error) => { console.error((error as Error).message); process.exitCode = 1; });
+        return;
+      }
       const registration = loadStateOrFail();
       ensureHabitatIsConnected(registration);
       const blueprint = requireBlueprint(registration, blueprintId);
