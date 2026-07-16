@@ -148,6 +148,18 @@ describe("registration state", () => {
     expect(() => saveState(invalid)).toThrow();
     expect(loadKeplerRegistration()).toEqual(existing);
   });
+
+  test("preserves hydrated humans when a later state update omits them", () => {
+    const dataDirectory = mkdtempSync(path.join(os.tmpdir(), "habitat-state-"));
+    tempDirectories.push(dataDirectory);
+    process.env.HABITAT_DATA_DIRECTORY = dataDirectory;
+
+    const existing = createRegistration({ humans: [createHuman("human-1", "Alex", "module-1")], modules: [createModule("module-1")] });
+    saveState(existing);
+    saveState({ ...existing, humans: [], modules: [createModule("module-2")] });
+
+    expect(loadKeplerRegistration()?.humans).toEqual(existing.humans);
+  });
 });
 
 function createRegistration(overrides: Partial<KeplerRegistration>): KeplerRegistration {

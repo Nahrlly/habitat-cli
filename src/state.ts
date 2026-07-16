@@ -378,6 +378,8 @@ export function loadStateOrFail(): KeplerRegistration {
 export function saveState(registration: KeplerRegistration, evaState?: HabitatEvaState): void {
   validateRegistrationPersistence(registration);
   withDatabase((db) => {
+    const existingHumans = db.query("SELECT id, display_name AS displayName, location_module_id AS locationModuleId, status FROM habitat_humans").all() as HabitatHuman[];
+    const humansToPersist = registration.humans.length > 0 ? registration.humans : existingHumans;
     db.transaction(() => {
       db.run("DELETE FROM kepler_registration;");
       db.run("DELETE FROM habitat_humans;");
@@ -402,7 +404,7 @@ export function saveState(registration: KeplerRegistration, evaState?: HabitatEv
         `INSERT INTO habitat_humans (id, display_name, location_module_id, status)
          VALUES (?, ?, ?, ?)`,
       );
-      for (const human of registration.humans) {
+      for (const human of humansToPersist) {
         humanInsert.run(human.id, human.displayName, human.locationModuleId, human.status);
       }
 
