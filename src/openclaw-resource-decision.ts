@@ -12,7 +12,7 @@ export type OpenClawResourceDecisionOptions = {
 
 export function createOpenClawResourceDecision(options: OpenClawResourceDecisionOptions = {}) {
   const binary = options.binary ?? process.env.OPENCLAW_BIN ?? "openclaw";
-  const timeoutSeconds = options.timeoutSeconds ?? Number(process.env.OPENCLAW_MISSION_TIMEOUT_SECONDS ?? 60);
+  const timeoutSeconds = options.timeoutSeconds ?? Number(process.env.OPENCLAW_MISSION_TIMEOUT_SECONDS ?? 120);
   const runAgent = options.runAgent ?? ((args) => runOpenClawAgent(binary, args));
 
   return async function decide(context: ResourceMissionDecisionContext): Promise<ResourceMissionAction> {
@@ -37,7 +37,7 @@ export function createOpenClawResourceDecision(options: OpenClawResourceDecision
 
 export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionOptions = {}) {
   const binary = options.binary ?? process.env.OPENCLAW_BIN ?? "openclaw";
-  const timeoutSeconds = options.timeoutSeconds ?? Number(process.env.OPENCLAW_MISSION_TIMEOUT_SECONDS ?? 60);
+  const timeoutSeconds = options.timeoutSeconds ?? Number(process.env.OPENCLAW_MISSION_TIMEOUT_SECONDS ?? 120);
   const runAgent = options.runAgent ?? ((args) => runOpenClawAgent(binary, args));
   const maxPlanSteps = options.maxPlanSteps ?? Number(process.env.OPENCLAW_MISSION_MAX_PLAN_STEPS ?? 12);
 
@@ -54,7 +54,7 @@ export function createOpenClawResourcePlanner(options: OpenClawResourceDecisionO
         snapshot: context.snapshot,
         legalActions: context.legalActions,
         maxPlanSteps,
-        recentIterations: context.recentIterations,
+        recentIterations: (context.recentIterations ?? []).map(summarizePlanIteration),
       }),
     ].join("\n");
     const raw = await runAgent({ sessionId: `habitat-resource-mission-${context.mission.id}`, message, timeoutSeconds });
@@ -120,4 +120,26 @@ function parseActionValue(value: unknown): ResourceMissionAction {
   if (action.type === "scan" && Number.isSafeInteger(action.strength) && Number.isSafeInteger(action.radius)) return { type: "scan", strength: action.strength as number, radius: action.radius as number };
   if (action.type === "collect" && Number.isSafeInteger(action.quantityKg) && (action.quantityKg as number) > 0) return { type: "collect", quantityKg: action.quantityKg as number };
   throw new Error();
+}
+
+function summarizePlanIteration(iteration: ResourceMissionPlanContext["recentIterations"][number]): Record<string, unknown> {
+  const scanPayload = isRecord(iteration.scan?.scan) ? iteration.scan.scan : iteration.scan;
+  const tiles = Array.isArray(scanPayload?.tiles) ? scanPayload.tiles : [];
+  return {
+    action: iteration.action,
+    actionInput: iteration.actionInput,
+    scan: tiles.length ? {
+      tiles: tiles.filter(isRecord).slice(0, 16).map((tile) => ({
+        x: tile.x,
+        y: tile.y,
+        topCandidate: tile.topCandidate,
+        quantityEstimate: tile.quantityEstimate,
+      })),
+    } : null,
+    evaSnapshot: iteration.evaSnapshot,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
