@@ -23,6 +23,8 @@ import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power
 import { createConstructedModule } from "./commands.js";
 import { createOperationalAlert } from "./alerts-domain.js";
 import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot, type PowerOverviewResponse, type SolarStatusResponse } from "./realtime.js";
+import { ClockEventManager } from "./clock-events.js";
+import { loadClockState } from "./clock-state.js";
 
 export const app = new Hono();
 
@@ -66,6 +68,13 @@ async function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>
   await enqueueRealtimeSnapshot(buildRealtimeSnapshot, client);
 }
 
+export const clockManager = new ClockEventManager({
+  applyTick: async (advancedBy) => {
+    await applySimulationTick(advancedBy);
+  },
+  broadcast: broadcastCurrentSnapshot,
+});
+
 app.use("*", async (c, next) => {
   const startedAt = Date.now();
   await next();
@@ -81,6 +90,48 @@ app.get("/health", (c) => {
   return c.json({
     ok: true,
     service: "habitat-backend",
+  });
+});
+
+app.get("/clock/status", (c) => c.json(clockManager.getStatus()));
+
+app.post("/clock/listen/on", async (c) => {
+  try {
+    return c.json(await clockManager.listenOn());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ error: message }, message.includes("not registered") ? 404 : 409);
+  }
+});
+
+app.post("/clock/listen/off", async (c) => {
+  try {
+    return c.json(await clockManager.listenOff());
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+app.get("/clock/events", () => {
+  const encoder = new TextEncoder();
+  let unsubscribe = () => {};
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      unsubscribe = clockManager.subscribe((event) => {
+        controller.enqueue(encoder.encode(`event: planet_tick\ndata: ${JSON.stringify(event)}\n\n`));
+      });
+    },
+    cancel() {
+      unsubscribe();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "Content-Type": "text/event-stream; charset=utf-8",
+    },
   });
 });
 
@@ -655,6 +706,7 @@ app.post("/commands/unregister", async (c) => {
       return c.json({ error: "Habitat is not registered." }, 404);
     }
 
+    await clockManager.listenOff();
     await unregisterFromKepler(registration.habitatId);
     clearPowerHistory();
     await broadcastCurrentSnapshot();
@@ -672,31 +724,79 @@ app.post("/commands/tick", async (c) => {
     return c.json({ error: "ticks must be a positive whole number." }, 400);
   }
 
+  if (loadClockState().listening) {
+    return c.json({ error: "Manual ticks are disabled while Kepler clock listening is on. Run POST /clock/listen/off first." }, 409);
+  }
+
   try {
-    const solarIrradiance = await createCatalogClient().getSolarIrradiance();
-    const report = applyTickWithSolarIrradiance(registration, body!.ticks!, solarIrradiance);
-    const construction = advanceConstruction(body!.ticks!);
-    const completedModule = construction.completedJob ? createConstructedModule(report.registration, construction.completedJob) : null;
-    const persistedRegistration = completedModule ? { ...report.registration, modules: [...report.registration.modules, completedModule] } : report.registration;
-    const eva = getEvaStatus();
-    if (eva.deployedHumanId && !eva.exhausted) {
-      const suitBattery = Math.max(0, eva.suitBattery - body!.ticks! * SUIT_BATTERY_PER_TICK);
-      const suitOxygen = Math.max(0, eva.suitOxygen - body!.ticks! * SUIT_OXYGEN_PER_TICK);
-      const exhausted = suitBattery <= 0 || suitOxygen <= 0;
-      const nextEva = { ...eva, suitBattery, suitOxygen, estimatedTicksRemaining: Math.min(Math.ceil(suitBattery / SUIT_BATTERY_PER_TICK), Math.ceil(suitOxygen / SUIT_OXYGEN_PER_TICK)), exhausted };
-      const alerts = [...persistedRegistration.alerts];
-      if ((suitBattery <= eva.maxSuitBattery * 0.25 || suitOxygen <= eva.maxSuitOxygen * 0.25) && !alerts.some((alert) => alert.id === `eva-low-${eva.deployedHumanId}`)) alerts.push({ id: `eva-low-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-low", severity: "warning", status: "open", source: "habitat-local", message: `EVA suit resources are low: battery ${suitBattery}/${eva.maxSuitBattery}, oxygen ${suitOxygen}/${eva.maxSuitOxygen}.`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
-      if (exhausted && !alerts.some((alert) => alert.id === `eva-exhausted-${eva.deployedHumanId}`)) alerts.push({ id: `eva-exhausted-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-exhausted", severity: "critical", status: "open", source: "habitat-local", message: "EVA exhausted: the human did not return in time.", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
-      saveState({ ...persistedRegistration, alerts }, nextEva);
-    } else {
-      saveState(persistedRegistration);
-    }
+    const result = await applySimulationTick(body!.ticks!);
     await broadcastCurrentSnapshot();
-    return c.json({ ticks: body!.ticks, registration: persistedRegistration, construction, completedModule, totalPowerDraw: report.totalPowerDraw, totalSolarGeneration: report.totalSolarGeneration, batteryBefore: report.batteryBefore, batteryAfter: report.batteryAfter, solarChargeReason: report.solarChargeReason });
+    return c.json(result);
   } catch (error) {
     return friendlyError(c, error);
   }
 });
+
+type SimulationTickResult = {
+  ticks: number;
+  registration: KeplerRegistration;
+  construction: ReturnType<typeof advanceConstruction>;
+  completedModule: HabitatModule | null;
+  totalPowerDraw: number;
+  totalSolarGeneration: number;
+  batteryBefore: number;
+  batteryAfter: number;
+  solarChargeReason: string | null;
+};
+
+async function applySimulationTick(ticks: number): Promise<SimulationTickResult> {
+  const registration = loadKeplerRegistration();
+  if (!registration) throw new Error("Habitat is not registered.");
+
+  const solarIrradiance = await createCatalogClient().getSolarIrradiance();
+  const report = applyTickWithSolarIrradiance(registration, ticks, solarIrradiance);
+  const construction = advanceConstruction(ticks);
+  const completedModule = construction.completedJob ? createConstructedModule(report.registration, construction.completedJob) : null;
+  const persistedRegistration = completedModule
+    ? { ...report.registration, modules: [...report.registration.modules, completedModule] }
+    : report.registration;
+  const eva = getEvaStatus();
+
+  if (eva.deployedHumanId && !eva.exhausted) {
+    const suitBattery = Math.max(0, eva.suitBattery - ticks * SUIT_BATTERY_PER_TICK);
+    const suitOxygen = Math.max(0, eva.suitOxygen - ticks * SUIT_OXYGEN_PER_TICK);
+    const exhausted = suitBattery <= 0 || suitOxygen <= 0;
+    const nextEva = {
+      ...eva,
+      suitBattery,
+      suitOxygen,
+      estimatedTicksRemaining: Math.min(Math.ceil(suitBattery / SUIT_BATTERY_PER_TICK), Math.ceil(suitOxygen / SUIT_OXYGEN_PER_TICK)),
+      exhausted,
+    };
+    const alerts = [...persistedRegistration.alerts];
+    if ((suitBattery <= eva.maxSuitBattery * 0.25 || suitOxygen <= eva.maxSuitOxygen * 0.25) && !alerts.some((alert) => alert.id === `eva-low-${eva.deployedHumanId}`)) {
+      alerts.push({ id: `eva-low-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-low", severity: "warning", status: "open", source: "habitat-local", message: `EVA suit resources are low: battery ${suitBattery}/${eva.maxSuitBattery}, oxygen ${suitOxygen}/${eva.maxSuitOxygen}.`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
+    }
+    if (exhausted && !alerts.some((alert) => alert.id === `eva-exhausted-${eva.deployedHumanId}`)) {
+      alerts.push({ id: `eva-exhausted-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-exhausted", severity: "critical", status: "open", source: "habitat-local", message: "EVA exhausted: the human did not return in time.", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
+    }
+    saveState({ ...persistedRegistration, alerts }, nextEva);
+  } else {
+    saveState(persistedRegistration);
+  }
+
+  return {
+    ticks,
+    registration: persistedRegistration,
+    construction,
+    completedModule,
+    totalPowerDraw: report.totalPowerDraw,
+    totalSolarGeneration: report.totalSolarGeneration,
+    batteryBefore: report.batteryBefore,
+    batteryAfter: report.batteryAfter,
+    solarChargeReason: report.solarChargeReason,
+  };
+}
 
 app.post("/commands/construct", async (c) => {
   const registration = loadKeplerRegistration();
@@ -858,6 +958,8 @@ const port = Number(process.env.HABITAT_API_PORT ?? 8787);
 
 if (import.meta.main) {
   console.log(`Habitat backend listening on http://${host}:${port}`);
+
+  clockManager.start();
 
   Bun.serve({
     hostname: host,
