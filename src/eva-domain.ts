@@ -1,16 +1,27 @@
 import { dockEvaStateAtomically, loadKeplerRegistration, loadEvaState, saveEvaState } from "./state.js";
 import type { HabitatEvaState } from "./types.js";
 import { createOperationalAlert } from "./alerts-domain.js";
+import {
+  EVA_TICK_OXYGEN_COST,
+  EVA_TICK_POWER_COST,
+} from "./eva-resource-cost.js";
 
 const DEFAULT_CAPACITY_KG = 20;
 export const SUIT_BATTERY_CAPACITY = 100;
 export const SUIT_OXYGEN_CAPACITY = 100;
-export const SUIT_BATTERY_PER_TICK = 1;
-export const SUIT_OXYGEN_PER_TICK = 1;
-export const SUIT_LOW_THRESHOLD = 0.25;
+export const SUIT_BATTERY_PER_TICK = EVA_TICK_POWER_COST;
+export const SUIT_OXYGEN_PER_TICK = EVA_TICK_OXYGEN_COST;
 
 export function getEvaStatus(): HabitatEvaState {
-  return loadEvaState() ?? { deployedHumanId: null, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: 0, exhausted: false };
+  const saved = loadEvaState();
+  if (!saved) return { deployedHumanId: null, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: 0, exhausted: false };
+  return {
+    ...saved,
+    batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK,
+    oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK,
+    estimatedTicksRemaining: Math.min(Math.ceil(saved.suitBattery / SUIT_BATTERY_PER_TICK), Math.ceil(saved.suitOxygen / SUIT_OXYGEN_PER_TICK)),
+    exhausted: saved.deployedHumanId !== null && (saved.suitBattery <= 0 || saved.suitOxygen <= 0),
+  };
 }
 
 export type EvaSectorBounds = { minX: number; maxX: number; minY: number; maxY: number };

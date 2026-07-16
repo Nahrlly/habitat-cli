@@ -18,6 +18,7 @@ import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInvent
 import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { assertModuleCanBeDeleted, createHuman, deleteHuman, listHumans, moveHuman, updateHuman } from "./human-domain.js";
 import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds, SUIT_BATTERY_PER_TICK, SUIT_OXYGEN_PER_TICK } from "./eva-domain.js";
+import { isLowEVAResource, scanBatteryCost } from "./eva-resource-cost.js";
 import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
@@ -775,7 +776,7 @@ async function applySimulationTick(ticks: number): Promise<SimulationTickResult>
       exhausted,
     };
     const alerts = [...persistedRegistration.alerts];
-    if ((suitBattery <= eva.maxSuitBattery * 0.25 || suitOxygen <= eva.maxSuitOxygen * 0.25) && !alerts.some((alert) => alert.id === `eva-low-${eva.deployedHumanId}`)) {
+    if ((isLowEVAResource(suitBattery, eva.maxSuitBattery) || isLowEVAResource(suitOxygen, eva.maxSuitOxygen)) && !alerts.some((alert) => alert.id === `eva-low-${eva.deployedHumanId}`)) {
       alerts.push({ id: `eva-low-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-low", severity: "warning", status: "open", source: "habitat-local", message: `EVA suit resources are low: battery ${suitBattery}/${eva.maxSuitBattery}, oxygen ${suitOxygen}/${eva.maxSuitOxygen}.`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
     }
     if (exhausted && !alerts.some((alert) => alert.id === `eva-exhausted-${eva.deployedHumanId}`)) {
@@ -899,10 +900,11 @@ app.get("/world/scan", async (c) => {
     let y: number;
     let sensorStrength: number;
     let radiusTiles: number;
+    let eva: ReturnType<typeof getEvaStatus>;
 
     try {
-      const eva = loadEvaState();
-      if (!eva?.deployedHumanId) throw new Error("EVA is not deployed; deploy a human before scanning.");
+      eva = getEvaStatus();
+      if (!eva.deployedHumanId) throw new Error("EVA is not deployed; deploy a human before scanning.");
       if (eva.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
       x = eva.x;
       y = eva.y;
@@ -925,6 +927,13 @@ app.get("/world/scan", async (c) => {
       y,
       sensorStrength,
       radiusTiles,
+    });
+    const scanBattery = Math.max(0, eva.suitBattery - scanBatteryCost(eva.maxSuitBattery, sensorStrength));
+    saveEvaState({
+      ...eva,
+      suitBattery: scanBattery,
+      estimatedTicksRemaining: Math.min(Math.ceil(scanBattery / eva.batteryConsumptionPerTick), Math.ceil(eva.suitOxygen / eva.oxygenConsumptionPerTick)),
+      exhausted: scanBattery <= 0 || eva.suitOxygen <= 0,
     });
     return c.json(scan);
   } catch (error) {
