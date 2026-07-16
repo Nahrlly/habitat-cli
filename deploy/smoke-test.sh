@@ -4,8 +4,8 @@ set -euo pipefail
 BASE_URL="${1:-http://127.0.0.1:8787}"
 
 case "$BASE_URL" in
-  https://*) WS_URL="wss://${BASE_URL#https://}" ;;
-  http://*) WS_URL="ws://${BASE_URL#http://}" ;;
+  https://*) WS_URL="wss://${BASE_URL#https://}/ws" ;;
+  http://*) WS_URL="ws://${BASE_URL#http://}/ws" ;;
   *) echo "Base URL must start with http:// or https://" >&2; exit 2 ;;
 esac
 
