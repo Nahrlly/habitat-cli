@@ -602,6 +602,14 @@ export function createProgram(): Command {
         },
       ) => {
         try {
+          if (remoteModeEnabled()) {
+            const response = await apiClient.postJson<{ module: HabitatModule }>("/modules", {
+              name: parseNonEmptyString(name, "Module name"), blueprintId: options.blueprintId,
+              connectedTo: options.connectedTo, runtimeAttributes: options.runtimeAttribute.length > 0 ? parseKeyValuePairs(options.runtimeAttribute, "runtime attribute") : {}, capabilities: options.capability,
+            });
+            console.log(`Module created: ${response.module.displayName}`);
+            return;
+          }
           const registration = loadStateOrFail();
           const module = ensureDefaultModuleRuntimeStatus({
             id: randomUUID(),
@@ -629,6 +637,12 @@ export function createProgram(): Command {
     .description("List local modules.")
     .action(async () => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.getJson<{ modules: HabitatModule[] }>("/modules");
+          if (response.modules.length === 0) { console.log("No modules found."); return; }
+          for (const module of response.modules) console.log(module.selector);
+          return;
+        }
         const registration = loadStateOrFail();
         if (registration.modules.length === 0) {
           console.log("No modules found.");
@@ -650,6 +664,11 @@ export function createProgram(): Command {
     .argument("<selector>", "module selector or id")
     .action(async (selector: string) => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.getJson<{ module: HabitatModule; construction: ReturnType<typeof loadConstructionState>["activeJob"] }>(`/modules/${encodeURIComponent(selector)}`);
+          console.log(formatModuleDetails(response.module, response.construction));
+          return;
+        }
         const registration = loadStateOrFail();
         const module = resolveModule(registration, selector);
         console.log(formatModuleDetails(module, loadConstructionState().activeJob));
@@ -680,6 +699,15 @@ export function createProgram(): Command {
         },
       ) => {
         try {
+          if (remoteModeEnabled()) {
+            const response = await apiClient.patchJson<{ module: HabitatModule }>(`/modules/${encodeURIComponent(selector)}`, {
+              name: options.name, blueprintId: options.blueprintId, connectedTo: options.connectedTo.length > 0 ? options.connectedTo : undefined,
+              runtimeAttributes: options.runtimeAttribute.length > 0 ? parseKeyValuePairs(options.runtimeAttribute, "runtime attribute") : undefined,
+              capabilities: options.capability.length > 0 ? options.capability : undefined,
+            });
+            console.log(`Module updated: ${response.module.displayName}`);
+            return;
+          }
           const registration = loadStateOrFail();
           const currentModule = resolveModule(registration, selector);
           const nextModule: HabitatModule = {
@@ -709,6 +737,11 @@ export function createProgram(): Command {
     .argument("<selector>", "module selector or id")
     .action(async (selector: string) => {
       try {
+        if (remoteModeEnabled()) {
+          await apiClient.deleteJson(`/modules/${encodeURIComponent(selector)}`);
+          console.log(`Module deleted: ${selector}`);
+          return;
+        }
         const registration = loadStateOrFail();
         const currentModule = resolveModule(registration, selector);
         assertModuleCanBeDeleted(currentModule.id);
