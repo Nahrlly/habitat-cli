@@ -6,6 +6,7 @@ export type Registration = {
 
 export type SolarStatus = { solarIrradiance: { wPerM2: number; condition?: string } };
 export type PowerOverview = SolarStatus & { generationKw: number; consumptionKw: number; netKw: number };
+export type Human = { id: string; displayName: string; locationModuleId: string; status: string };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}) } });
@@ -17,6 +18,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const habitatApi = {
   registration: () => request<Registration>("/registration"),
   modules: () => request<{ modules: Registration["modules"] }>("/modules"),
+  humans: () => request<{ humans: Human[] }>("/humans"),
   module: (selector: string) => request<{ module: Registration["modules"][number]; construction: Record<string, unknown> | null }>(`/modules/${encodeURIComponent(selector)}`),
   solar: () => request<SolarStatus>("/solar/status"),
   power: () => request<PowerOverview>("/power/overview"),
