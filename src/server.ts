@@ -15,7 +15,7 @@ import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStat
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
-import { advanceConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
+import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { assertModuleCanBeDeleted, createHuman, deleteHuman, listHumans, moveHuman, updateHuman } from "./human-domain.js";
 import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds } from "./eva-domain.js";
 import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
@@ -550,6 +550,18 @@ app.post("/commands/construct", async (c) => {
     return c.json({ ...result, completedModule });
   }
   return c.json(result);
+});
+
+app.get("/construction/status", (c) => c.json({ construction: loadConstructionState() }));
+
+app.post("/construction/cancel", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { selector?: string } | null;
+  const activeJob = loadConstructionState().activeJob;
+  const selector = body?.selector?.trim() || activeJob?.fabricatorSelector || activeJob?.fabricatorId || activeJob?.selector;
+  if (!selector) return c.json({ error: "No active construction job to cancel." }, 409);
+  const result = cancelConstruction(selector);
+  if (!result.canceledJob) return c.json({ error: `No active construction job matches ${selector}.` }, 404);
+  return c.json({ canceledJob: result.canceledJob });
 });
 
 app.get("/catalog/blueprints", async (c) => {

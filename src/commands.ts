@@ -233,7 +233,7 @@ export function createProgram(): Command {
   humanCommand
     .command("list")
     .description("List local Habitat humans.")
-    .action(() => {
+    .action(async () => {
       try {
         console.log(formatHumanList(listHumans()));
       } catch (error) {
@@ -393,8 +393,13 @@ export function createProgram(): Command {
   constructionCommand
     .command("status")
     .description("Show construction progress.")
-    .action(() => {
+    .action(async () => {
       try {
+        if (remoteModeEnabled()) {
+          const response = await apiClient.getJson<{ construction: ReturnType<typeof loadConstructionState> }>("/construction/status");
+          console.log(formatConstructionStatus(response.construction.activeJob));
+          return;
+        }
         const state = loadConstructionState();
         console.log(formatConstructionStatus(state.activeJob));
       } catch (error) {
@@ -407,8 +412,13 @@ export function createProgram(): Command {
     .command("cancel")
     .description("Cancel an in-progress construction job.")
     .argument("[selector]", "module selector")
-    .action((selector: string | undefined) => {
+    .action(async (selector: string | undefined) => {
       try {
+        if (remoteModeEnabled()) {
+          await apiClient.postJson("/construction/cancel", selector ? { selector } : {});
+          console.log(`Construction canceled: ${selector ?? "active job"}.`);
+          return;
+        }
         const registration = loadStateOrFail();
         const currentConstruction = loadConstructionState();
         const activeJob = currentConstruction.activeJob;
