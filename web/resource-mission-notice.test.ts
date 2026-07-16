@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatOpenClawMissionNotice } from "./resource-mission-notice";
+import { formatOpenClawMissionNotice, formatResourceMissionReturnNotice } from "./resource-mission-notice";
 
 describe("resource mission notices", () => {
   test("describes the response returned by OpenClaw", () => {
@@ -21,5 +21,15 @@ describe("resource mission notices", () => {
       actionInput: { source: "openclaw" },
       error: "OpenClaw unavailable",
     })).toBe("OpenClaw returned an error: OpenClaw unavailable");
+  });
+
+  test("names resources brought back when the mission completes", () => {
+    expect(formatResourceMissionReturnNotice({
+      status: "completed",
+      collectedResources: [
+        { resourceId: "ferrite", displayName: "Ferrite", quantityKg: 8 },
+        { resourceId: "ice-regolith", quantityKg: 3 },
+      ],
+    })).toBe("OpenClaw returned with: 8 kg Ferrite, 3 kg ice-regolith");
   });
 });

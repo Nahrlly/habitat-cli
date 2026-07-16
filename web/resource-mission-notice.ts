@@ -5,6 +5,12 @@ type MissionPlanIteration = {
   error?: string | null;
 };
 
+type MissionResource = {
+  resourceId: string;
+  displayName?: string;
+  quantityKg: number;
+};
+
 export function formatOpenClawMissionNotice(iteration: MissionPlanIteration): string | null {
   if (iteration.action !== "plan" || iteration.actionInput.source !== "openclaw") return null;
   if (iteration.error) return `OpenClaw returned an error: ${iteration.error}`;
@@ -15,6 +21,15 @@ export function formatOpenClawMissionNotice(iteration: MissionPlanIteration): st
 
   const responseText = typeof iteration.actionInput.responseText === "string" ? iteration.actionInput.responseText.trim() : "";
   return responseText ? `OpenClaw returned: ${responseText}` : "OpenClaw returned an empty plan.";
+}
+
+export function formatResourceMissionReturnNotice(report: { status: string; collectedResources: MissionResource[] }): string | null {
+  if (report.status !== "completed" || !report.collectedResources.length) return null;
+  const resources = report.collectedResources
+    .filter((resource) => resource.quantityKg > 0)
+    .map((resource) => `${resource.quantityKg} kg ${resource.displayName ?? resource.resourceId}`)
+    .join(", ");
+  return resources ? `OpenClaw returned with: ${resources}` : null;
 }
 
 function formatAction(action: Record<string, unknown>): string {

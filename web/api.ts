@@ -20,7 +20,7 @@ export type ClockStatus = {
 };
 export type HabitatRealtimeSnapshot = { registration: Registration | null; modules: Registration["modules"]; humans: Human[]; solar: SolarStatus | null; power: PowerOverview | null; powerHistory: PowerHistoryPoint[]; alerts: Array<Record<string, unknown>>; clock?: ClockStatus | null };
 export type Human = { id: string; displayName: string; locationModuleId: string; status: string };
-export type EvaResource = { resourceId: string; quantityKg: number };
+export type EvaResource = { resourceId: string; displayName?: string; quantityKg: number };
 export type EvaStatus = { deployedHumanId: string | null; x: number; y: number; carriedResources: EvaResource[]; maxCarryingCapacityKg: number; suitBattery: number; maxSuitBattery: number; suitOxygen: number; maxSuitOxygen: number; estimatedTicksRemaining: number; exhausted: boolean };
 export type ResourceMission = { id: string; humanId: string; status: "running" | "stopping" | "completed" | "failed"; currentAction: string | null; stopReason: string | null; error: string | null; startedAt: string; updatedAt: string; completedAt: string | null };
 export type ResourceMissionStatus = { mission: ResourceMission | null; eva: EvaStatus | null };
