@@ -1,13 +1,30 @@
 import type { ServerWebSocket } from "bun";
 import type { HabitatAlert, HabitatHuman, HabitatModule, KeplerRegistration } from "./types.js";
+import type { KeplerSolarIrradiance } from "./kepler-catalog.js";
+import type { PowerHistoryPoint } from "./power-history.js";
+
+export type SolarStatusResponse = {
+  solarIrradiance: KeplerSolarIrradiance;
+};
+
+export type PowerOverviewResponse = {
+  generationKw: number;
+  consumptionKw: number;
+  netKw: number;
+  solarIrradiance: KeplerSolarIrradiance;
+};
+
+export type PowerHistoryResponse = {
+  history: PowerHistoryPoint[];
+};
 
 export type HabitatRealtimeSnapshot = {
   registration: KeplerRegistration | null;
   modules: HabitatModule[];
   humans: HabitatHuman[];
-  solar: unknown;
-  power: unknown;
-  powerHistory: unknown[];
+  solar: SolarStatusResponse | null;
+  power: PowerOverviewResponse | null;
+  powerHistory: PowerHistoryPoint[];
   alerts: HabitatAlert[];
 };
 

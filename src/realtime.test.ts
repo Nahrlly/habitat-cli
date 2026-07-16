@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { HabitatRealtimeSnapshot, PowerOverviewResponse, PowerHistoryResponse, SolarStatusResponse } from "./realtime.js";
 import {
   addRealtimeClient,
   broadcastRealtimeSnapshot,
@@ -92,6 +93,15 @@ describe("realtime client registry", () => {
 });
 
 describe("dashboard WebSocket endpoint", () => {
+  test("uses explicit REST response shapes for realtime payloads", () => {
+    const solar: SolarStatusResponse = { solarIrradiance: { wPerM2: 321 } };
+    const power: PowerOverviewResponse = { generationKw: 4, consumptionKw: 2, netKw: 2, solarIrradiance: { wPerM2: 321 } };
+    const history: PowerHistoryResponse = { history: [] };
+    const snapshot = { solar, power, powerHistory: history.history } as Pick<HabitatRealtimeSnapshot, "solar" | "power" | "powerHistory">;
+
+    expect(JSON.parse(JSON.stringify(snapshot))).toEqual({ solar, power, powerHistory: [] });
+  });
+
   test("broadcastCurrentSnapshot sends the persisted current snapshot", async () => {
     const messages: string[] = [];
     const connected = client((message) => messages.push(message));

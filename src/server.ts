@@ -22,14 +22,14 @@ import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.j
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
 import { createOperationalAlert } from "./alerts-domain.js";
-import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot } from "./realtime.js";
+import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot, type PowerOverviewResponse, type SolarStatusResponse } from "./realtime.js";
 
 export const app = new Hono();
 
 export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> {
   const registration = loadKeplerRegistration();
-  let solar: unknown = null;
-  let power: unknown = null;
+  let solar: SolarStatusResponse | null = null;
+  let power: PowerOverviewResponse | null = null;
 
   try {
     const solarIrradiance = await createCatalogClient().getSolarIrradiance();
