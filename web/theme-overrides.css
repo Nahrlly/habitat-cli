@@ -131,6 +131,70 @@ select:disabled {
 .reports-panel { max-width: 1200px; }.alert-table { overflow-x: auto; }.alert-table table { width: 100%; border-collapse: collapse; }.alert-table th, .alert-table td { padding: 13px 12px; border-top: 1px solid #292929; text-align: left; font-size: 12px; }.alert-table th { color: #8e9bb8; text-transform: uppercase; letter-spacing: .06em; }.alert-table td { color: #e3eaff; }.severity { padding: 4px 8px; border-radius: 999px; background: #28344d; }.severity.critical, .severity.urgent { color: #ff9ca3; background: #4a2029; }.severity.warning { color: #ffc36f; background: #4b351d; }
 @media (max-width: 700px) { .weather-grid { grid-template-columns: 1fr; } }
 
+.blueprint-topbar { align-items: end; }
+.blueprint-topbar h1 { margin-bottom: 8px; }
+.blueprint-topbar p { max-width: 650px; margin: 0; }
+.catalog-count { color: #8fa4c4; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.blueprint-workspace { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 14px; align-items: start; }
+.blueprint-list { padding: 0; overflow: hidden; min-height: 620px; }
+.blueprint-search { display: flex; align-items: center; gap: 9px; padding: 17px 16px; border-bottom: 1px solid #2a2a2a; color: #8ea0be; }
+.blueprint-search span { font-size: 22px; }
+.blueprint-search input { min-width: 0; padding: 0; border: 0; background: transparent; }
+.blueprint-search input:focus { outline: 0; }
+.blueprint-filters { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid #2a2a2a; }
+.blueprint-filters button { flex: 1; padding: 8px 9px; background: transparent; color: #8fa4c4; font-size: 11px; }
+.blueprint-filters button.active { background: #183c61; color: #ddecff; }
+.blueprint-filters small { margin-left: 5px; opacity: .65; }
+.blueprint-results { max-height: 680px; overflow: auto; }
+.blueprint-list-item { display: grid; grid-template-columns: 42px minmax(0, 1fr) 12px; gap: 10px; align-items: center; width: 100%; padding: 12px 13px; border-top: 1px solid #242424; border-radius: 0; background: transparent; color: #e4edfb; text-align: left; }
+.blueprint-list-item:hover, .blueprint-list-item.selected { background: #132b42; }
+.blueprint-list-item.selected { box-shadow: inset 3px 0 #49a8de; }
+.blueprint-list-item span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+.blueprint-list-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; text-transform: uppercase; }
+.blueprint-list-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7f96b4; font-size: 10px; }
+.blueprint-thumb { display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid #3d637c; background: linear-gradient(145deg, #d2b36e, #27364a); color: #102031; font-size: 11px; font-weight: 900; }
+.blueprint-arrow { color: #76bee8; font-size: 22px; }
+.blueprint-detail { min-width: 0; padding: 26px; }
+.blueprint-detail-head { display: flex; justify-content: space-between; gap: 20px; align-items: start; }
+.blueprint-status { color: #61d19b; font-size: 10px; letter-spacing: .15em; font-weight: 800; }
+.blueprint-detail h2 { margin: 6px 0 5px; color: #f2f7ff; font-size: 26px; text-transform: none; letter-spacing: 0; }
+.blueprint-detail code { color: #5aa8df; font-size: 11px; }
+.blueprint-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+.blueprint-detail-actions button { white-space: nowrap; }
+.pin-button.pinned { color: #12100a; background: #e5b460; }
+.blueprint-description { max-width: 850px; margin: 20px 0; color: #aabbd4; line-height: 1.55; font-size: 13px; }
+.blueprint-detail-grid { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(280px, 1.2fr); gap: 15px; }
+.blueprint-art { min-height: 280px; display: grid; place-items: center; align-content: center; gap: 14px; border: 1px solid #64563a; background: radial-gradient(circle at 50% 35%, #c3a263, #675538 42%, #1c2730 100%); color: #f3d28b; box-shadow: inset 0 0 70px #130e08aa; }
+.blueprint-art span { display: grid; place-items: center; width: 140px; height: 140px; border: 2px solid #e2c483; border-radius: 22px; background: linear-gradient(145deg, #d6c28e, #6d6b61); color: #263342; font-size: 32px; font-weight: 900; transform: rotate(-4deg); box-shadow: 12px 14px 0 #26344255; }
+.blueprint-art small { letter-spacing: .2em; font-size: 10px; }
+.blueprint-facts { display: grid; border: 1px solid #303b46; }
+.fact-group { padding: 15px 17px; border-bottom: 1px solid #303b46; }
+.fact-group:last-child { border-bottom: 0; }
+.fact-group h3, .required-resources h3 { margin: 0 0 10px; color: #d7e5f8; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.fact-row { display: flex; justify-content: space-between; gap: 15px; padding: 6px 0; color: #8399b5; font-size: 11px; }
+.fact-row strong { color: #e5edf9; text-align: right; font-weight: 500; }
+.required-resources { margin-top: 20px; padding-top: 18px; border-top: 1px solid #303b46; }
+.section-heading { display: flex; justify-content: space-between; align-items: end; margin-bottom: 13px; }
+.section-heading h3 { margin-top: 5px; margin-bottom: 0; }
+.section-heading small { color: #8fa4c4; font-size: 10px; }
+.resource-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 9px; }
+.resource-card { padding: 12px; border: 1px solid #3b3b3b; background: #101010; }
+.resource-card.ready { border-color: #2e735b; }
+.resource-card.short { border-color: #765532; }
+.resource-visual { display: grid; place-items: center; height: 74px; margin-bottom: 10px; background: radial-gradient(circle at 50% 35%, #56657a, #1b2633); color: #b7cae6; font-size: 30px; font-weight: 800; }
+.resource-card>strong { display: block; color: #eaf2ff; font-size: 11px; text-transform: uppercase; }
+.resource-amounts { display: flex; justify-content: space-between; gap: 5px; margin-top: 10px; color: #8599b5; font-size: 10px; }
+.resource-amounts b { display: block; color: #ecf3ff; margin-top: 3px; }
+.resource-bar { height: 5px; margin: 11px 0 7px; overflow: hidden; background: #2b2b2b; }
+.resource-bar i { display: block; height: 100%; background: #e2a64f; }
+.resource-card.ready .resource-bar i { background: #53c995; }
+.resource-card small { color: #e3aa59; font-size: 9px; letter-spacing: .08em; }
+.resource-card.ready small { color: #61d19b; }
+.blueprint-notice { margin-bottom: 14px; padding: 11px 14px; border: 1px solid #376e8d; border-radius: 9px; background: #102a3a; color: #bde6fb; font-size: 12px; }
+.blueprint-empty { min-height: 400px; display: grid; place-content: center; text-align: center; }
+@media(max-width:900px){.blueprint-workspace{grid-template-columns:1fr}.blueprint-list{min-height:0}.blueprint-results{max-height:280px}.blueprint-detail-grid{grid-template-columns:1fr}.blueprint-detail-head{display:grid}.blueprint-detail-actions{justify-content:start}}
+@media(max-width:560px){.blueprint-detail{padding:18px}.blueprint-topbar{display:block}.catalog-count{display:block;margin-top:10px}.blueprint-detail-actions button{flex:1}.blueprint-art{min-height:220px}}
+
 .module-detail {
   display: flex;
   align-items: center;

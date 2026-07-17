@@ -68,6 +68,27 @@ function initializeSchema(db: Database): void {
   ensureColumn(db, "kepler_registration", "stream_json", "TEXT NOT NULL DEFAULT '{}' ");
   ensureColumn(db, "kepler_registration", "contracts_json", "TEXT NOT NULL DEFAULT '{}' ");
   db.run(`
+    CREATE TABLE IF NOT EXISTS clock_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      mode TEXT NOT NULL DEFAULT 'manual',
+      listening INTEGER NOT NULL DEFAULT 0,
+      connection_status TEXT NOT NULL DEFAULT 'disconnected',
+      latest_absolute_tick INTEGER,
+      latest_advanced_by INTEGER,
+      last_connection_at TEXT,
+      last_message_at TEXT,
+      latest_error TEXT
+    );
+  `);
+  ensureColumn(db, "clock_state", "mode", "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn(db, "clock_state", "listening", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "clock_state", "connection_status", "TEXT NOT NULL DEFAULT 'disconnected'");
+  ensureColumn(db, "clock_state", "latest_absolute_tick", "INTEGER");
+  ensureColumn(db, "clock_state", "latest_advanced_by", "INTEGER");
+  ensureColumn(db, "clock_state", "last_connection_at", "TEXT");
+  ensureColumn(db, "clock_state", "last_message_at", "TEXT");
+  ensureColumn(db, "clock_state", "latest_error", "TEXT");
+  db.run(`
     CREATE TABLE IF NOT EXISTS habitat_humans (
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,
@@ -86,9 +107,13 @@ function initializeSchema(db: Database): void {
       message TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      subject_json TEXT,
       details_json TEXT NOT NULL
     );
   `);
+  ensureColumn(db, "habitat_alerts", "occurrence_count", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "habitat_alerts", "subject_json", "TEXT");
   db.run(`
     CREATE TABLE IF NOT EXISTS habitat_modules (
       id TEXT PRIMARY KEY,
@@ -123,8 +148,16 @@ function initializeSchema(db: Database): void {
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
     carried_resources_json TEXT NOT NULL,
-    max_carrying_capacity_kg REAL NOT NULL
+    max_carrying_capacity_kg REAL NOT NULL,
+    suit_battery REAL NOT NULL DEFAULT 100,
+    max_suit_battery REAL NOT NULL DEFAULT 100,
+    suit_oxygen REAL NOT NULL DEFAULT 100,
+    max_suit_oxygen REAL NOT NULL DEFAULT 100
   );`);
+  ensureColumn(db, "eva_state", "suit_battery", "REAL NOT NULL DEFAULT 100");
+  ensureColumn(db, "eva_state", "max_suit_battery", "REAL NOT NULL DEFAULT 100");
+  ensureColumn(db, "eva_state", "suit_oxygen", "REAL NOT NULL DEFAULT 100");
+  ensureColumn(db, "eva_state", "max_suit_oxygen", "REAL NOT NULL DEFAULT 100");
   db.run(`CREATE TABLE IF NOT EXISTS power_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recorded_at TEXT NOT NULL,
@@ -132,6 +165,34 @@ function initializeSchema(db: Database): void {
     consumption_kw REAL NOT NULL,
     net_kw REAL NOT NULL,
     modules_json TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS resource_missions (
+    id TEXT PRIMARY KEY,
+    human_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    active_key TEXT UNIQUE,
+    current_action TEXT,
+    stop_reason TEXT,
+    error TEXT,
+    priority_resources_json TEXT NOT NULL DEFAULT '[]',
+    final_eva_json TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+  );`);
+  ensureColumn(db, "resource_missions", "priority_resources_json", "TEXT NOT NULL DEFAULT '[]'");
+  db.run(`CREATE TABLE IF NOT EXISTS resource_mission_iterations (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES resource_missions(id),
+    sequence INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    action_input_json TEXT NOT NULL,
+    scan_json TEXT,
+    collected_resources_json TEXT NOT NULL,
+    error TEXT,
+    eva_snapshot_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (mission_id, sequence)
   );`);
 }
 

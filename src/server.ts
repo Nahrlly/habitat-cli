@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type {
   HabitatAlert,
   HabitatHuman,
@@ -9,19 +10,77 @@ import type {
   KeplerRegistrationResponse,
   KeplerStarterModule,
 } from "./types.js";
-import { loadKeplerRegistration, setModuleStatus } from "./state.js";
-import { clearLocalHabitatState, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, saveState } from "./state.js";
+import { getModuleStatusOptions, loadKeplerRegistration, setModuleStatus } from "./state.js";
+import { clearLocalHabitatState, consumeEvaBatteryAtomically, ensureKeplerEnv, ensureDefaultModuleRuntimeStatus, loadEvaState, saveEvaState, saveState } from "./state.js";
 import { createKeplerCatalogClient } from "./kepler-catalog.js";
 import { createKeplerWorldClient } from "./kepler-world.js";
 import { addInventoryQuantity, loadInventoryState, saveInventoryState, setInventoryQuantity } from "./inventory-state.js";
-import { advanceConstruction, loadConstructionState, saveConstructionState } from "./construction-state.js";
+import { advanceConstruction, cancelConstruction, loadConstructionState, saveConstructionState, startConstruction } from "./construction-state.js";
 import { assertModuleCanBeDeleted, createHuman, deleteHuman, listHumans, moveHuman, updateHuman } from "./human-domain.js";
-import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds } from "./eva-domain.js";
+import { deployEva, dockEva, getEvaStatus, moveEva, type EvaSectorBounds, SUIT_BATTERY_PER_TICK, SUIT_OXYGEN_PER_TICK } from "./eva-domain.js";
+import { isLowEVAResource, scanBatteryCost } from "./eva-resource-cost.js";
 import { applyTickWithSolarIrradiance, getModulePowerDraw } from "./formatters.js";
 import { clearPowerHistory, loadPowerHistory, recordPowerHistory } from "./power-history.js";
 import { createConstructedModule } from "./commands.js";
+import { createOperationalAlert } from "./alerts-domain.js";
+import { addRealtimeClient, enqueueRealtimeSnapshot, removeRealtimeClient, type HabitatRealtimeSnapshot, type PowerOverviewResponse, type SolarStatusResponse } from "./realtime.js";
+import { ClockEventManager } from "./clock-events.js";
+import { loadClockState } from "./clock-state.js";
+import { createResourceMissionController, type ResourceMissionApi } from "./resource-mission-controller.js";
+import { loadActiveResourceMission } from "./resource-mission-state.js";
+import { createOpenClawResourcePlanner } from "./openclaw-resource-decision.js";
+import type { ResourceMissionPriority } from "./resource-mission.js";
 
 export const app = new Hono();
+const resourceMissionController = createResourceMissionController({ api: createLocalResourceMissionApi(), plan: createOpenClawResourcePlanner(), fallbackPlanOnError: true });
+
+export async function buildRealtimeSnapshot(): Promise<HabitatRealtimeSnapshot> {
+  const registration = loadKeplerRegistration();
+  let solar: SolarStatusResponse | null = null;
+  let power: PowerOverviewResponse | null = null;
+
+  try {
+    const solarIrradiance = await createCatalogClient().getSolarIrradiance();
+    solar = { solarIrradiance };
+    if (registration) {
+      const report = applyTickWithSolarIrradiance(registration, 3600, solarIrradiance);
+      power = {
+        generationKw: report.totalSolarGeneration,
+        consumptionKw: report.totalPowerDraw,
+        netKw: report.totalSolarGeneration - report.totalPowerDraw,
+        solarIrradiance,
+      };
+    }
+  } catch {
+    // Realtime delivery remains available when the external irradiance service is unavailable.
+  }
+
+  return {
+    registration,
+    modules: registration?.modules ?? [],
+    humans: listHumans(),
+    solar,
+    power,
+    powerHistory: loadPowerHistory(),
+    alerts: registration?.alerts ?? [],
+    clock: loadClockState(),
+  };
+}
+
+export async function broadcastCurrentSnapshot(): Promise<void> {
+  await enqueueRealtimeSnapshot(buildRealtimeSnapshot);
+}
+
+async function sendRealtimeSnapshot(client: Parameters<typeof addRealtimeClient>[0]): Promise<void> {
+  await enqueueRealtimeSnapshot(buildRealtimeSnapshot, client);
+}
+
+export const clockManager = new ClockEventManager({
+  applyTick: async (advancedBy) => {
+    await applySimulationTick(advancedBy);
+  },
+  broadcast: broadcastCurrentSnapshot,
+});
 
 app.use("*", async (c, next) => {
   const startedAt = Date.now();
@@ -40,6 +99,50 @@ app.get("/health", (c) => {
     service: "habitat-backend",
   });
 });
+
+app.get("/clock/status", (c) => c.json(clockManager.getStatus()));
+
+app.post("/clock/listen/on", async (c) => {
+  try {
+    return c.json(await clockManager.listenOn());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ error: message }, message.includes("not registered") ? 404 : 409);
+  }
+});
+
+app.post("/clock/listen/off", async (c) => {
+  try {
+    return c.json(await clockManager.listenOff());
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+  }
+});
+
+app.get("/clock/events", () => {
+  const encoder = new TextEncoder();
+  let unsubscribe = () => {};
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      unsubscribe = clockManager.subscribe((event) => {
+        controller.enqueue(encoder.encode(`event: planet_tick\ndata: ${JSON.stringify(event)}\n\n`));
+      });
+    },
+    cancel() {
+      unsubscribe();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "Content-Type": "text/event-stream; charset=utf-8",
+    },
+  });
+});
+
+app.get("/ws", (c) => c.text("WebSocket upgrade required.", 426));
 
 app.get("/registration", (c) => {
   const registration = loadKeplerRegistration();
@@ -63,7 +166,7 @@ app.get("/modules", (c) => {
     return c.json({ error: "Habitat is not registered." }, 404);
   }
 
-  return c.json({ modules: registration.modules });
+  return c.json({ modules: registration.modules.map((module) => ({ ...module, statusOptions: getModuleStatusOptions(module) })) });
 });
 
 app.get("/humans", (c) => {
@@ -81,7 +184,7 @@ app.get("/eva/status", (c) => {
 app.post("/eva/deploy", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { humanId?: string } | null;
   if (!body?.humanId?.trim()) return c.json({ error: "humanId is required." }, 400);
-  try { return c.json({ eva: deployEva(body.humanId.trim()) }); }
+  try { const eva = deployEva(body.humanId.trim()); await broadcastCurrentSnapshot(); return c.json({ eva }); }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
 });
 app.post("/eva/move", async (c) => {
@@ -91,13 +194,39 @@ app.post("/eva/move", async (c) => {
     const registration = loadKeplerRegistration();
     if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
     const sector = await createWorldClient().getCurrentSector(registration.habitatId);
-    return c.json({ eva: moveEva(body!.x!, body!.y!, readSectorBounds(sector)) });
+    const eva = moveEva(body!.x!, body!.y!, readSectorBounds(sector));
+    await broadcastCurrentSnapshot();
+    return c.json({ eva });
   }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
 });
-app.post("/eva/dock", (c) => {
-  try { return c.json({ eva: dockEva() }); }
+app.post("/eva/dock", async (c) => {
+  try { const eva = dockEva(); await broadcastCurrentSnapshot(); return c.json({ eva }); }
   catch (error) { return c.json({ error: (error as Error).message }, 409); }
+});
+
+app.post("/autonomy/mission/start", async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => null)) as { priorityResources?: ResourceMissionPriority[] } | null;
+    const mission = await resourceMissionController.start({ priorityResources: body?.priorityResources });
+    const { eva } = await resourceMissionController.status();
+    return c.json({ mission, eva }, 202);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+  }
+});
+
+app.get("/autonomy/mission/status", async (c) => c.json(await resourceMissionController.status()));
+
+app.post("/autonomy/mission/stop", async (c) => {
+  const mission = await resourceMissionController.stop();
+  const status = await resourceMissionController.status();
+  return c.json({ ...status, mission: mission ?? status.mission });
+});
+
+app.get("/autonomy/mission/report", (c) => {
+  const report = resourceMissionController.report(c.req.query("missionId"));
+  return report ? c.json({ report }) : c.json({ error: "No resource mission report is available." }, 404);
 });
 
 app.post("/humans", async (c) => {
@@ -107,7 +236,9 @@ app.post("/humans", async (c) => {
   }
 
   try {
-    return c.json({ human: createHuman(body.displayName, body.locationModuleId) }, 201);
+    const human = createHuman(body.displayName, body.locationModuleId);
+    await broadcastCurrentSnapshot();
+    return c.json({ human }, 201);
   } catch (error) {
     return c.json({ error: (error as Error).message }, 404);
   }
@@ -116,15 +247,18 @@ app.post("/humans", async (c) => {
 app.patch("/humans/:id", async (c) => {
   const body = (await c.req.json().catch(() => null)) as Partial<Pick<HabitatHuman, "displayName" | "locationModuleId" | "status">> | null;
   try {
-    return c.json({ human: updateHuman(c.req.param("id"), body ?? {}) });
+    const human = updateHuman(c.req.param("id"), body ?? {});
+    await broadcastCurrentSnapshot();
+    return c.json({ human });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 404);
   }
 });
 
-app.delete("/humans/:id", (c) => {
+app.delete("/humans/:id", async (c) => {
   try {
     deleteHuman(c.req.param("id"));
+    await broadcastCurrentSnapshot();
     return c.json({ ok: true });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 404);
@@ -139,6 +273,7 @@ app.post("/humans/:id/move", async (c) => {
 
   try {
     const human = moveHuman(c.req.param("id"), body.moduleId.trim());
+    await broadcastCurrentSnapshot();
     const module = loadKeplerRegistration()?.modules.find((entry) => entry.id === human.locationModuleId);
     return c.json({ human, moduleSelector: module?.selector ?? human.locationModuleId });
   } catch (error) {
@@ -180,10 +315,12 @@ app.post("/alerts", async (c) => {
     message: body.message.trim(),
     createdAt: now,
     updatedAt: now,
+    occurrenceCount: 1,
     details: body.details && typeof body.details === "object" ? body.details : {},
   };
 
   saveState({ ...registration, alerts: [...registration.alerts, alert] });
+  await broadcastCurrentSnapshot();
   return c.json({ alert }, 201);
 });
 
@@ -210,16 +347,20 @@ app.patch("/alerts/:id", async (c) => {
     updatedAt: new Date().toISOString(),
     details: body?.details && typeof body.details === "object" ? body.details : currentAlert.details,
   };
+  if (!["open", "acknowledged", "resolved"].includes(nextAlert.status)) {
+    return c.json({ error: "Alert status must be open, acknowledged, or resolved." }, 400);
+  }
 
   saveState({
     ...registration,
     alerts: registration.alerts.map((alert) => (alert.id === nextAlert.id ? nextAlert : alert)),
   });
+  await broadcastCurrentSnapshot();
 
   return c.json({ alert: nextAlert });
 });
 
-app.delete("/alerts/:id", (c) => {
+app.delete("/alerts/:id", async (c) => {
   const registration = loadKeplerRegistration();
 
   if (!registration) {
@@ -232,6 +373,7 @@ app.delete("/alerts/:id", (c) => {
   }
 
   saveState({ ...registration, alerts: nextAlerts });
+  await broadcastCurrentSnapshot();
   return c.json({ ok: true });
 });
 
@@ -298,6 +440,7 @@ app.post("/modules", async (c) => {
   });
 
   saveState({ ...registration, modules: [...registration.modules, module] });
+  await broadcastCurrentSnapshot();
   return c.json({ module }, 201);
 });
 
@@ -334,11 +477,12 @@ app.patch("/modules/:selector", async (c) => {
     ...registration,
     modules: registration.modules.map((module) => (module.id === currentModule.id ? nextModule : module)),
   });
+  await broadcastCurrentSnapshot();
 
   return c.json({ module: nextModule });
 });
 
-app.delete("/modules/:selector", (c) => {
+app.delete("/modules/:selector", async (c) => {
   const registration = loadKeplerRegistration();
 
   if (!registration) {
@@ -360,6 +504,7 @@ app.delete("/modules/:selector", (c) => {
     ...registration,
     modules: registration.modules.filter((module) => module.id !== currentModule.id),
   });
+  await broadcastCurrentSnapshot();
 
   return c.json({ ok: true });
 });
@@ -386,8 +531,13 @@ app.patch("/modules/:selector/status", async (c) => {
     return c.json({ error: "status must be offline, idle, online, active, or damaged." }, 400);
   }
 
+  if (!getModuleStatusOptions(currentModule).includes(body.status)) {
+    return c.json({ error: `${currentModule.displayName} does not support manual status ${body.status}.` }, 400);
+  }
+
   const nextRegistration = setModuleStatus(registration, currentModule.id, body.status);
   saveState(nextRegistration);
+  await broadcastCurrentSnapshot();
 
   return c.json({ module: nextRegistration.modules.find((module) => module.id === currentModule.id), modules: nextRegistration.modules });
 });
@@ -413,6 +563,8 @@ app.post("/inventory/set", async (c) => {
     category: body.category,
   });
 
+  await broadcastCurrentSnapshot();
+
   return c.json({ item });
 });
 
@@ -433,6 +585,8 @@ app.post("/inventory/add", async (c) => {
     category: body.category,
   });
 
+  await broadcastCurrentSnapshot();
+
   return c.json({ item });
 });
 
@@ -443,23 +597,99 @@ app.post("/world/collect", async (c) => {
       return c.json({ error: "Habitat is not registered." }, 404);
     }
 
-    const body = (await c.req.json().catch(() => null)) as { x?: number; y?: number; quantityKg?: number } | null;
-    if (typeof body?.x !== "number" || typeof body?.y !== "number" || typeof body?.quantityKg !== "number") {
-      return c.json({ error: "x, y, and quantityKg are required." }, 400);
+    const body = (await c.req.json().catch(() => null)) as { quantityKg?: number } | null;
+    const eva = loadEvaState();
+    if (!eva?.deployedHumanId) {
+      return c.json({ error: "EVA is not deployed; deploy a human before collecting." }, 409);
+    }
+    if (eva.exhausted) return c.json({ error: "EVA is exhausted: the human did not return in time." }, 409);
+    if (typeof body?.quantityKg !== "number" || !Number.isSafeInteger(body.quantityKg) || body.quantityKg <= 0) {
+      return c.json({ error: "quantity-kg must be a positive whole number." }, 400);
+    }
+    const carriedKg = eva.carriedResources.reduce((total, resource) => total + resource.quantityKg, 0);
+    if (carriedKg + body.quantityKg > eva.maxCarryingCapacityKg) {
+      return c.json({ error: `Collection exceeds EVA carrying capacity: ${carriedKg} kg carried, ${eva.maxCarryingCapacityKg} kg maximum.` }, 409);
     }
 
-    const collection = await createWorldClient().collect({
-      habitatId: registration.habitatId,
-      x: body.x,
-      y: body.y,
-      quantityKg: body.quantityKg,
-    });
+    let collection: Record<string, unknown>;
+    try {
+      collection = await createWorldClient().collect({ habitatId: registration.habitatId, x: eva.x, y: eva.y, quantityKg: body.quantityKg });
+    } catch (error) {
+      createOperationalAlert({ type: "collection-failed", message: `Collection failed at (${eva.x}, ${eva.y}): ${(error as Error).message}`, details: { x: eva.x, y: eva.y, quantityKg: body.quantityKg } });
+      throw error;
+    }
 
+    const resourceId = extractCollectedResourceId(collection);
+    const collectedQuantityKg = extractCollectedQuantity(collection, body.quantityKg);
+    if (!resourceId || collectedQuantityKg <= 0) {
+      return c.json({ error: "Kepler collection succeeded without returning a material and quantity." }, 502);
+    }
+    const existingResource = eva.carriedResources.find((resource) => resource.resourceId === resourceId);
+    saveEvaState({
+      ...eva,
+      carriedResources: existingResource
+        ? eva.carriedResources.map((resource) => resource.resourceId === resourceId ? { ...resource, quantityKg: resource.quantityKg + collectedQuantityKg } : resource)
+        : [...eva.carriedResources, { resourceId, quantityKg: collectedQuantityKg }],
+    });
+    if (carriedKg + collectedQuantityKg >= eva.maxCarryingCapacityKg) {
+      createOperationalAlert({ type: "eva-carrying-capacity-reached", message: `EVA carrying capacity reached (${eva.maxCarryingCapacityKg} kg).`, subject: { type: "human", id: eva.deployedHumanId }, details: { capacityKg: eva.maxCarryingCapacityKg } });
+    }
+
+    await broadcastCurrentSnapshot();
     return c.json(collection);
   } catch (error) {
     return friendlyError(c, error);
   }
 });
+
+function extractCollectedResourceId(collection: Record<string, unknown>): string | null {
+  const direct = [collection.resourceId, collection.materialId, collection.collectedResource, collection.resourceName, collection.materialName];
+  for (const value of direct) if (typeof value === "string" && value.trim()) return value;
+  if (typeof collection.material === "string" && collection.material.trim()) return collection.material;
+  if (typeof collection.resource === "string" && collection.resource.trim()) return collection.resource;
+  for (const key of ["material", "resource", "collected", "collection", "result"]) {
+    const nested = collection[key];
+    if (isRecord(nested)) {
+      const id = extractCollectedResourceId(nested);
+      if (id) return id;
+    }
+  }
+  for (const [key, value] of Object.entries(collection)) {
+    if (typeof value === "string" && /(material|resource)/i.test(key) && value.trim()) return value;
+    if (isRecord(value) && /(material|resource)/i.test(key)) {
+      for (const nestedKey of ["id", "resourceId", "materialId", "name", "slug"]) {
+        if (typeof value[nestedKey] === "string" && value[nestedKey].trim()) return value[nestedKey] as string;
+      }
+    }
+    if (isRecord(value)) {
+      const id = extractCollectedResourceId(value);
+      if (id) return id;
+    }
+  }
+  return null;
+}
+
+function extractCollectedQuantity(collection: Record<string, unknown>, requestedQuantityKg: number): number {
+  for (const key of ["quantityKg", "collectedQuantityKg", "collectedQuantity", "amountKg", "collectedAmountKg", "quantity", "amount"]) {
+    const value = collection[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  for (const key of ["material", "resource", "collected", "collection", "result"]) {
+    const nested = collection[key];
+    if (isRecord(nested)) {
+      const quantity = extractCollectedQuantity(nested, requestedQuantityKg);
+      if (quantity !== requestedQuantityKg) return quantity;
+    }
+  }
+  for (const [key, value] of Object.entries(collection)) {
+    if (typeof value === "number" && Number.isFinite(value) && /(quantity|amount|weight|mass)/i.test(key)) return value;
+    if (isRecord(value)) {
+      const quantity = extractCollectedQuantity(value, requestedQuantityKg);
+      if (quantity !== requestedQuantityKg) return quantity;
+    }
+  }
+  return requestedQuantityKg;
+}
 
 app.get("/world/sectors/current", async (c) => {
   try {
@@ -491,6 +721,7 @@ app.post("/commands/register", async (c) => {
 
     const registration = await registerWithKepler(name);
     saveState(registration);
+    await broadcastCurrentSnapshot();
 
     return c.json({ registration });
   } catch (error) {
@@ -506,8 +737,10 @@ app.post("/commands/unregister", async (c) => {
       return c.json({ error: "Habitat is not registered." }, 404);
     }
 
+    await clockManager.listenOff();
     await unregisterFromKepler(registration.habitatId);
     clearPowerHistory();
+    await broadcastCurrentSnapshot();
     return c.json({ ok: true });
   } catch (error) {
     return friendlyError(c, error);
@@ -522,17 +755,109 @@ app.post("/commands/tick", async (c) => {
     return c.json({ error: "ticks must be a positive whole number." }, 400);
   }
 
+  if (loadClockState().listening) {
+    return c.json({ error: "Manual ticks are disabled while Kepler clock listening is on. Run POST /clock/listen/off first." }, 409);
+  }
+
   try {
-    const solarIrradiance = await createCatalogClient().getSolarIrradiance();
-    const report = applyTickWithSolarIrradiance(registration, body!.ticks!, solarIrradiance);
-    const construction = advanceConstruction(body!.ticks!);
-    const completedModule = construction.completedJob ? createConstructedModule(report.registration, construction.completedJob) : null;
-    const persistedRegistration = completedModule ? { ...report.registration, modules: [...report.registration.modules, completedModule] } : report.registration;
-    saveState(persistedRegistration);
-    return c.json({ ticks: body!.ticks, registration: persistedRegistration, construction, completedModule, totalPowerDraw: report.totalPowerDraw, totalSolarGeneration: report.totalSolarGeneration, batteryBefore: report.batteryBefore, batteryAfter: report.batteryAfter, solarChargeReason: report.solarChargeReason });
+    const result = await applySimulationTick(body!.ticks!);
+    await broadcastCurrentSnapshot();
+    return c.json(result);
   } catch (error) {
     return friendlyError(c, error);
   }
+});
+
+type SimulationTickResult = {
+  ticks: number;
+  registration: KeplerRegistration;
+  construction: ReturnType<typeof advanceConstruction>;
+  completedModule: HabitatModule | null;
+  totalPowerDraw: number;
+  totalSolarGeneration: number;
+  batteryBefore: number;
+  batteryAfter: number;
+  solarChargeReason: string | null;
+};
+
+async function applySimulationTick(ticks: number): Promise<SimulationTickResult> {
+  const registration = loadKeplerRegistration();
+  if (!registration) throw new Error("Habitat is not registered.");
+
+  const solarIrradiance = await createCatalogClient().getSolarIrradiance();
+  const report = applyTickWithSolarIrradiance(registration, ticks, solarIrradiance);
+  const construction = advanceConstruction(ticks);
+  const completedModule = construction.completedJob ? createConstructedModule(report.registration, construction.completedJob) : null;
+  const persistedRegistration = completedModule
+    ? { ...report.registration, modules: [...report.registration.modules, completedModule] }
+    : report.registration;
+  const eva = getEvaStatus();
+
+  if (eva.deployedHumanId && !eva.exhausted) {
+    const suitBattery = Math.max(0, eva.suitBattery - ticks * SUIT_BATTERY_PER_TICK);
+    const suitOxygen = Math.max(0, eva.suitOxygen - ticks * SUIT_OXYGEN_PER_TICK);
+    const exhausted = suitBattery <= 0 || suitOxygen <= 0;
+    const nextEva = {
+      ...eva,
+      suitBattery,
+      suitOxygen,
+      estimatedTicksRemaining: Math.min(Math.ceil(suitBattery / SUIT_BATTERY_PER_TICK), Math.ceil(suitOxygen / SUIT_OXYGEN_PER_TICK)),
+      exhausted,
+    };
+    const alerts = [...persistedRegistration.alerts];
+    if ((isLowEVAResource(suitBattery, eva.maxSuitBattery) || isLowEVAResource(suitOxygen, eva.maxSuitOxygen)) && !alerts.some((alert) => alert.id === `eva-low-${eva.deployedHumanId}`)) {
+      alerts.push({ id: `eva-low-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-low", severity: "warning", status: "open", source: "habitat-local", message: `EVA suit resources are low: battery ${suitBattery}/${eva.maxSuitBattery}, oxygen ${suitOxygen}/${eva.maxSuitOxygen}.`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
+    }
+    if (exhausted && !alerts.some((alert) => alert.id === `eva-exhausted-${eva.deployedHumanId}`)) {
+      alerts.push({ id: `eva-exhausted-${eva.deployedHumanId}`, schemaVersion: persistedRegistration.contracts.alerts.schemaVersion, type: "eva-resource-exhausted", severity: "critical", status: "open", source: "habitat-local", message: "EVA exhausted: the human did not return in time.", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), occurrenceCount: 1, subject: { type: "human", id: eva.deployedHumanId }, details: { suitBattery, suitOxygen } });
+    }
+    saveState({ ...persistedRegistration, alerts }, nextEva);
+  } else {
+    saveState(persistedRegistration);
+  }
+
+  return {
+    ticks,
+    registration: persistedRegistration,
+    construction,
+    completedModule,
+    totalPowerDraw: report.totalPowerDraw,
+    totalSolarGeneration: report.totalSolarGeneration,
+    batteryBefore: report.batteryBefore,
+    batteryAfter: report.batteryAfter,
+    solarChargeReason: report.solarChargeReason,
+  };
+}
+
+app.post("/commands/construct", async (c) => {
+  const registration = loadKeplerRegistration();
+  if (!registration) return c.json({ error: "Habitat is not registered." }, 404);
+  const body = (await c.req.json().catch(() => null)) as { blueprintId?: string; dryRun?: boolean } | null;
+  const blueprint = registration.blueprints.find((candidate) => candidate.blueprintId === body?.blueprintId);
+  if (!blueprint) return c.json({ error: `Blueprint not found: ${body?.blueprintId ?? ""}.` }, 404);
+  const result = startConstruction({ blueprint, modules: registration.modules, dryRun: body?.dryRun ?? false });
+  if (result.startedJob?.ticksRemaining === 0) {
+    const completedModule = createConstructedModule(registration, result.startedJob);
+    saveState({ ...registration, modules: [...registration.modules, completedModule] });
+    saveConstructionState({ activeJob: null });
+    await broadcastCurrentSnapshot();
+    return c.json({ ...result, completedModule });
+  }
+  if (result.startedJob) await broadcastCurrentSnapshot();
+  return c.json(result);
+});
+
+app.get("/construction/status", (c) => c.json({ construction: loadConstructionState() }));
+
+app.post("/construction/cancel", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { selector?: string } | null;
+  const activeJob = loadConstructionState().activeJob;
+  const selector = body?.selector?.trim() || activeJob?.fabricatorSelector || activeJob?.fabricatorId || activeJob?.selector;
+  if (!selector) return c.json({ error: "No active construction job to cancel." }, 409);
+  const result = cancelConstruction(selector);
+  if (!result.canceledJob) return c.json({ error: `No active construction job matches ${selector}.` }, 404);
+  await broadcastCurrentSnapshot();
+  return c.json({ canceledJob: result.canceledJob });
 });
 
 app.get("/catalog/blueprints", async (c) => {
@@ -583,6 +908,7 @@ app.get("/power/overview", async (c) => {
     const solarIrradiance = await createCatalogClient().getSolarIrradiance();
     const report = applyTickWithSolarIrradiance(registration, 3600, solarIrradiance);
     recordPowerHistory({ recordedAt: new Date().toISOString(), generationKw: report.totalSolarGeneration, consumptionKw: report.totalPowerDraw, netKw: report.totalSolarGeneration - report.totalPowerDraw, modules: registration.modules.map((module) => ({ selector: module.selector, displayName: module.displayName, powerKw: getModulePowerDraw(module) })) });
+    await broadcastCurrentSnapshot();
     return c.json({ generationKw: report.totalSolarGeneration, consumptionKw: report.totalPowerDraw, netKw: report.totalSolarGeneration - report.totalPowerDraw, solarIrradiance });
   } catch (error) {
     return friendlyError(c, error);
@@ -603,10 +929,14 @@ app.get("/world/scan", async (c) => {
     let y: number;
     let sensorStrength: number;
     let radiusTiles: number;
+    let eva: ReturnType<typeof getEvaStatus>;
 
     try {
-      x = parseIntegerQuery(query.x, "x");
-      y = parseIntegerQuery(query.y, "y");
+      eva = getEvaStatus();
+      if (!eva.deployedHumanId) throw new Error("EVA is not deployed; deploy a human before scanning.");
+      if (eva.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
+      x = eva.x;
+      y = eva.y;
       sensorStrength = parseIntegerQuery(query.strength ?? query.sensorStrength, "sensor strength");
       radiusTiles = parseIntegerQuery(query.radius ?? query.radiusTiles ?? "0", "radius");
     } catch (error) {
@@ -627,22 +957,40 @@ app.get("/world/scan", async (c) => {
       sensorStrength,
       radiusTiles,
     });
+    consumeEvaBatteryAtomically(scanBatteryCost(eva.maxSuitBattery, sensorStrength));
     return c.json(scan);
   } catch (error) {
     return friendlyError(c, error);
   }
 });
 
-app.get("/", async () => {
-  const file = Bun.file("dist/index.html");
-  return new Response(await file.arrayBuffer(), { headers: { "Content-Type": "text/html; charset=UTF-8" } });
-});
+const dashboardRoutes = new Set(["/", "/dashboard", "/modules", "/blueprints", "/humans", "/weather", "/reports", "/settings"]);
+const dashboardDistDirectory = path.resolve(process.env.HABITAT_DIST_DIRECTORY ?? "dist");
+
+app.get("/", () => serveDashboardEntry());
 
 app.get("/assets/*", async (c) => {
-  const file = Bun.file(`dist/${c.req.path.slice(1)}`);
+  const file = Bun.file(path.join(dashboardDistDirectory, c.req.path.slice(1)));
   if (!(await file.exists())) return c.notFound();
   return new Response(await file.arrayBuffer(), { headers: { "Content-Type": contentTypeForPath(c.req.path) } });
 });
+
+app.get("/resources/*", async (c) => {
+  const file = Bun.file(path.join(dashboardDistDirectory, c.req.path.slice(1)));
+  if (!(await file.exists())) return c.notFound();
+  return new Response(await file.arrayBuffer(), { headers: { "Content-Type": contentTypeForPath(c.req.path) } });
+});
+
+app.get("*", async (c) => {
+  if (!dashboardRoutes.has(c.req.path)) return c.notFound();
+  return serveDashboardEntry();
+});
+
+async function serveDashboardEntry(): Promise<Response> {
+  const file = Bun.file(path.join(dashboardDistDirectory, "index.html"));
+  if (!(await file.exists())) return new Response("Dashboard build is unavailable.\n", { status: 503 });
+  return new Response(file, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+}
 
 const host = process.env.HABITAT_API_HOST ?? "127.0.0.1";
 const port = Number(process.env.HABITAT_API_PORT ?? 8787);
@@ -650,10 +998,34 @@ const port = Number(process.env.HABITAT_API_PORT ?? 8787);
 if (import.meta.main) {
   console.log(`Habitat backend listening on http://${host}:${port}`);
 
+  clockManager.start();
+
+  const activeMission = loadActiveResourceMission();
+  if (activeMission) {
+    void resourceMissionController.resumeActiveMission(activeMission).catch((error) => {
+      console.error(`[habitat] unable to resume resource mission ${activeMission.id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   Bun.serve({
     hostname: host,
     port,
-    fetch: app.fetch,
+    fetch(request, server) {
+      if (new URL(request.url).pathname === "/ws" && server.upgrade(request)) {
+        return undefined;
+      }
+      return app.fetch(request);
+    },
+    websocket: {
+      open(client) {
+        addRealtimeClient(client);
+        sendRealtimeSnapshot(client);
+      },
+      message() {},
+      close(client) {
+        removeRealtimeClient(client);
+      },
+    },
   });
 }
 
@@ -788,6 +1160,34 @@ function createWorldClient() {
   return createKeplerWorldClient(keplerBaseUrl, keplerPlanetToken, loggedKeplerFetch);
 }
 
+function createLocalResourceMissionApi(): ResourceMissionApi {
+  return {
+    humans: () => missionRequest("/humans"),
+    evaStatus: () => missionRequest("/eva/status"),
+    bounds: async () => {
+      const sector = await missionRequest<Record<string, unknown>>("/world/sectors/current");
+      const bounds = readSectorBounds(sector);
+      if (!bounds) throw new Error("Current world bounds are unavailable for the resource mission.");
+      return bounds;
+    },
+    deploy: (humanId) => missionRequest("/eva/deploy", { method: "POST", body: JSON.stringify({ humanId }) }),
+    scan: (strength, radius) => missionRequest(`/world/scan?strength=${strength}&radius=${radius}`),
+    collect: (quantityKg) => missionRequest("/world/collect", { method: "POST", body: JSON.stringify({ quantityKg }) }),
+    move: (x, y) => missionRequest("/eva/move", { method: "POST", body: JSON.stringify({ x, y }) }),
+    dock: () => missionRequest("/eva/dock", { method: "POST" }),
+  };
+}
+
+async function missionRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await app.request(`http://habitat.local${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+  });
+  const body = await response.json().catch(() => ({})) as T & { error?: unknown };
+  if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : `${response.status} ${response.statusText}`);
+  return body;
+}
+
 function ensureStarterModuleRuntimeStatus(module: HabitatModule): HabitatModule {
   if (module.blueprintId === "basic-battery" || module.displayName.toLowerCase().includes("battery")) {
     return {
@@ -841,7 +1241,13 @@ function makeUniqueSelector(identifier: string, modules: HabitatModule[]): strin
 }
 
 function readSectorBounds(payload: Record<string, unknown>): EvaSectorBounds | undefined {
-  const candidates = [payload, isRecord(payload.sector) ? payload.sector : null, isRecord(payload.bounds) ? payload.bounds : null];
+  const sector = isRecord(payload.sector) ? payload.sector : null;
+  const candidates = [
+    payload,
+    sector,
+    isRecord(payload.bounds) ? payload.bounds : null,
+    sector && isRecord(sector.bounds) ? sector.bounds : null,
+  ];
   for (const candidate of candidates) {
     if (!candidate) continue;
     const minX = candidate.minX ?? candidate.xMin;
@@ -870,6 +1276,7 @@ async function loggedKeplerFetch(input: RequestInfo | URL, init?: RequestInit): 
 function contentTypeForPath(path: string): string {
   if (path.endsWith(".css")) return "text/css; charset=UTF-8";
   if (path.endsWith(".js")) return "application/javascript; charset=UTF-8";
+  if (path.endsWith(".png")) return "image/png";
   return "application/octet-stream";
 }
 

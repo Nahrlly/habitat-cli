@@ -158,6 +158,14 @@ export type HabitatEvaState = {
   y: number;
   carriedResources: HabitatCarriedResource[];
   maxCarryingCapacityKg: number;
+  suitBattery: number;
+  maxSuitBattery: number;
+  suitOxygen: number;
+  maxSuitOxygen: number;
+  batteryConsumptionPerTick: number;
+  oxygenConsumptionPerTick: number;
+  estimatedTicksRemaining: number;
+  exhausted: boolean;
 };
 
 export type HabitatAlert = {
@@ -170,6 +178,8 @@ export type HabitatAlert = {
   message: string;
   createdAt: string;
   updatedAt: string;
+  occurrenceCount?: number;
+  subject?: { type: "human" | "module"; id: string };
   details: Record<string, unknown>;
 };
 
@@ -180,6 +190,21 @@ export type HabitatStream = {
   tickIntervalMs: number;
   ticksPerPulse: number;
   status: "paused" | "running";
+};
+
+export type HabitatClockMode = "manual" | "kepler";
+
+export type HabitatClockConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
+export type HabitatClockState = {
+  mode: HabitatClockMode;
+  listening: boolean;
+  connectionStatus: HabitatClockConnectionStatus;
+  latestAbsoluteTick: number | null;
+  latestAdvancedBy: number | null;
+  lastConnectionAt: string | null;
+  lastMessageAt: string | null;
+  latestError: string | null;
 };
 
 export type HabitatRegistrationContracts = {

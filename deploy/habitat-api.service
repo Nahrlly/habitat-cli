@@ -1,14 +1,19 @@
 [Unit]
-Description=Habitat API
+Description=Habitat API and dashboard
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=HABITAT_API_HOST=0.0.0.0
-Environment=HABITAT_API_PORT=8787
-WorkingDirectory=%h/habitat-cli
-ExecStart=/usr/local/bin/bun run server
-Restart=always
-RestartSec=3
+User=habitat
+Group=habitat
+WorkingDirectory=/opt/habitat-cli
+EnvironmentFile=/etc/habitat/habitat-api.env
+ExecStart=/home/habitat/.bun/bin/bun /opt/habitat-cli/src/server.ts
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

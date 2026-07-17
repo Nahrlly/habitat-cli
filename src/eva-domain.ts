@@ -1,10 +1,27 @@
-import { loadKeplerRegistration, loadEvaState, saveEvaState } from "./state.js";
+import { dockEvaStateAtomically, loadKeplerRegistration, loadEvaState, saveEvaState } from "./state.js";
 import type { HabitatEvaState } from "./types.js";
+import { createOperationalAlert } from "./alerts-domain.js";
+import {
+  EVA_TICK_OXYGEN_COST,
+  EVA_TICK_POWER_COST,
+} from "./eva-resource-cost.js";
 
 const DEFAULT_CAPACITY_KG = 20;
+export const SUIT_BATTERY_CAPACITY = 100;
+export const SUIT_OXYGEN_CAPACITY = 100;
+export const SUIT_BATTERY_PER_TICK = EVA_TICK_POWER_COST;
+export const SUIT_OXYGEN_PER_TICK = EVA_TICK_OXYGEN_COST;
 
 export function getEvaStatus(): HabitatEvaState {
-  return loadEvaState() ?? { deployedHumanId: null, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity() };
+  const saved = loadEvaState();
+  if (!saved) return { deployedHumanId: null, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: 0, exhausted: false };
+  return {
+    ...saved,
+    batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK,
+    oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK,
+    estimatedTicksRemaining: Math.min(Math.ceil(saved.suitBattery / SUIT_BATTERY_PER_TICK), Math.ceil(saved.suitOxygen / SUIT_OXYGEN_PER_TICK)),
+    exhausted: saved.deployedHumanId !== null && (saved.suitBattery <= 0 || saved.suitOxygen <= 0),
+  };
 }
 
 export type EvaSectorBounds = { minX: number; maxX: number; minY: number; maxY: number };
@@ -23,14 +40,16 @@ export function deployEva(humanId: string): HabitatEvaState {
   }
   const current = getEvaStatus();
   if (current.deployedHumanId && current.deployedHumanId !== humanId) throw new Error(`EVA is already deployed by human ${current.deployedHumanId}.`);
-  const next = { ...current, deployedHumanId: humanId, maxCarryingCapacityKg: getSuitportCapacity() };
+  const next = { ...current, deployedHumanId: humanId, x: 0, y: 0, carriedResources: [], maxCarryingCapacityKg: getSuitportCapacity(), suitBattery: SUIT_BATTERY_CAPACITY, maxSuitBattery: SUIT_BATTERY_CAPACITY, suitOxygen: SUIT_OXYGEN_CAPACITY, maxSuitOxygen: SUIT_OXYGEN_CAPACITY, batteryConsumptionPerTick: SUIT_BATTERY_PER_TICK, oxygenConsumptionPerTick: SUIT_OXYGEN_PER_TICK, estimatedTicksRemaining: Math.min(Math.ceil(SUIT_BATTERY_CAPACITY / SUIT_BATTERY_PER_TICK), Math.ceil(SUIT_OXYGEN_CAPACITY / SUIT_OXYGEN_PER_TICK)), exhausted: false };
   saveEvaState(next);
+  createOperationalAlert({ type: "human-deployed-outside", message: `${human.displayName} is deployed outside the habitat.`, subject: { type: "human", id: human.id }, details: { x: next.x, y: next.y } });
   return next;
 }
 
 export function moveEva(x: number, y: number, bounds?: EvaSectorBounds): HabitatEvaState {
   const current = getEvaStatus();
   if (!current.deployedHumanId) throw new Error("EVA is not deployed.");
+  if (current.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
   const dx = Math.abs(x - current.x);
   const dy = Math.abs(y - current.y);
   if (dx + dy !== 1) throw new Error("EVA moves must be exactly one tile north, south, east, or west.");
@@ -45,10 +64,12 @@ export function moveEva(x: number, y: number, bounds?: EvaSectorBounds): Habitat
 export function dockEva(): HabitatEvaState {
   const current = getEvaStatus();
   if (!current.deployedHumanId) throw new Error("EVA is not deployed.");
+  if (current.exhausted) throw new Error("EVA is exhausted: the human did not return in time.");
   if (current.x !== 0 || current.y !== 0) throw new Error("EVA can only dock at coordinates (0, 0).");
-  const next = { ...current, deployedHumanId: null, x: 0, y: 0, carriedResources: [] };
-  saveEvaState(next);
-  return next;
+  const registration = requireRegistration();
+  const suitport = findSuitport(registration.modules);
+  if (!suitport) throw new Error("EVA entry point unavailable: starter basic-suitport module was not found.");
+  return dockEvaStateAtomically(current.deployedHumanId, suitport.id, current.carriedResources);
 }
 
 function requireRegistration() {

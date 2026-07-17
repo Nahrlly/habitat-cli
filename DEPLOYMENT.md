@@ -19,3 +19,86 @@ Why `.env` and `habitat.sqlite` remain in the checkout but are ignored by Git:
 - `.env` holds machine-local configuration and secrets, so it stays on disk but is excluded from version control.
 - `habitat.sqlite` is the local persistent state database, so it also remains in the working tree while being left out of Git history.
 - This keeps deploy-time configuration and runtime state available on the machine without publishing credentials or local state to the repository.
+
+## Persistent dashboard deployment
+
+The production server serves the Vite build and the Hono API from the same origin. The browser URL is the reverse-proxy URL (for example, `https://habitat.example.com`); it is separate from `HABITAT_API_HOST`, which controls the server bind address.
+
+On a new host:
+
+1. Create the locked-down `habitat` user and persistent directory: `/var/lib/habitat`.
+2. Copy `deploy/habitat-api.env.example` to `/etc/habitat/habitat-api.env`, fill in the Kepler token, and set mode `600`.
+3. Install the checkout at `/opt/habitat-cli`, install Bun for the service user, and copy `deploy/habitat-api.service` to `/etc/systemd/system/`.
+4. Enable the service: `sudo systemctl daemon-reload && sudo systemctl enable --now habitat-api`.
+5. Use `deploy/deploy-habitat.sh` for upgrades. It runs tests, TypeScript validation, and a temporary frontend build before replacing `dist/`, then restarts and health-checks the service.
+
+After a restart, run `deploy/smoke-test.sh http://127.0.0.1:8787`. The same script can target the reverse-proxy URL to verify external reachability. It accepts `404` for stateful routes when no habitat is registered, but requires successful health and SPA responses.
+
+The service owns the persistent SQLite directory through `HABITAT_DATA_DIRECTORY`; deployments must not remove that directory or the server-only environment file.
+
+## No-sudo user deployment
+
+For an account without `sudo`, use the user-level unit. This assumes the checkout is `/home/emi/habitat-cli`, Bun is available at `/home/emi/.bun/bin/bun`, and lingering is already enabled.
+
+```bash
+cd /home/emi/habitat-cli
+cp deploy/habitat-api.user.env.example /tmp/habitat-api.user.env.example
+sed -i "s|%h|$HOME|g" /tmp/habitat-api.user.env.example
+mkdir -p "$HOME/.local/share/habitat"
+sed "s|%h|$HOME|g" /tmp/habitat-api.user.env.example > "$HOME/.local/share/habitat/habitat-api.env"
+chmod 600 "$HOME/.local/share/habitat/habitat-api.env"
+```
+
+If `/home/emi/habitat-cli/.env` already exists, `deploy/install-user-service.sh` copies it into the user-service environment automatically. Otherwise, edit `~/.local/share/habitat/habitat-api.env` and add the Kepler token before starting the service:
+
+```bash
+bash deploy/install-user-service.sh
+systemctl --user is-enabled habitat-api-user
+systemctl --user is-active habitat-api-user
+bash deploy/smoke-test.sh http://127.0.0.1:8787
+```
+
+For later upgrades:
+
+```bash
+cd /home/emi/habitat-cli
+bash deploy/deploy-habitat.sh
+```
+
+The user service binds to `0.0.0.0:8787` to preserve the remote CLI/dashboard workflow. Persistent SQLite state remains in `/home/emi/habitat-cli/data`, so the server CLI and dashboard use the same habitat state. The unit and its environment live under `~/.local/share` because this account's `~/.config` directory is administrator-owned.
+
+For remote access, place a TLS-capable reverse proxy or VPN boundary in front of Hono. Proxy `/` and the API paths to the same upstream origin, expose only the intended hostname, and keep `/etc/habitat/habitat-api.env`, `/var/lib/habitat`, source files, and the Vite development server off the network.
+
+### WebSocket dashboard migration
+
+The dashboard uses the same-origin WebSocket endpoint `/ws`. A page loaded over `http://` connects with `ws://`; a page loaded over `https://` connects with `wss://`. No separate WebSocket host is needed.
+
+The reverse proxy must forward WebSocket upgrades to the Hono service. Preserve the `Upgrade` and `Connection` headers, for example in an Nginx location:
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+After changing the checkout or service configuration, restart the persistent user service:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart habitat-api-user
+systemctl --user is-active habitat-api-user
+```
+
+Verify the WebSocket endpoint from the server or through the reverse-proxy URL:
+
+```bash
+bash deploy/smoke-test.sh http://127.0.0.1:8787
+bash deploy/smoke-test.sh https://habitat.example.com
+```
+
+The smoke test checks that `/ws` accepts the upgrade and sends an initial JSON snapshot. The dashboard reconnects automatically after a dropped connection and retains REST bootstrap/fallback behavior while the socket is unavailable.
+
+Known limitation: path-prefixed reverse-proxy deployments are unsupported. `/ws` must be reachable at the origin root; use a dedicated hostname or root-path proxy mapping rather than exposing the dashboard below a URL prefix.

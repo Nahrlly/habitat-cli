@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
+# Use the persistent Habitat server by default; callers can override this for another API.
+export HABITAT_API_BASE_URL="${HABITAT_API_BASE_URL:-http://100.127.123.108:8787}"
+export HABITAT_REMOTE_MODE=1
+
 echo "Starting"
 habitat unregister
 habitat register --name "Craziest Space Base You've Ever Seen"

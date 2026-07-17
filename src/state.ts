@@ -5,6 +5,7 @@ import {
   type HabitatHuman,
   type HabitatModule,
   type HabitatEvaState,
+  type HabitatCarriedResource,
   type KeplerBlueprint,
   type KeplerHabitat,
   type KeplerRegistration,
@@ -118,14 +119,95 @@ export function clearLocalHabitatState(): void {
 export function loadEvaState(): HabitatEvaState | null {
   ensureDataDirectory();
   return withDatabase((db) => {
-    const row = db.query(`SELECT deployed_human_id AS deployedHumanId, x, y, carried_resources_json AS carriedResourcesJson, max_carrying_capacity_kg AS maxCarryingCapacityKg FROM eva_state WHERE id = 1`).get() as { deployedHumanId: string | null; x: number; y: number; carriedResourcesJson: string; maxCarryingCapacityKg: number } | undefined;
-    return row ? { deployedHumanId: row.deployedHumanId, x: row.x, y: row.y, carriedResources: JSON.parse(row.carriedResourcesJson), maxCarryingCapacityKg: row.maxCarryingCapacityKg } : null;
+    const row = db.query(`SELECT *, deployed_human_id AS deployedHumanId, carried_resources_json AS carriedResourcesJson, max_carrying_capacity_kg AS maxCarryingCapacityKg FROM eva_state WHERE id = 1`).get() as any;
+    if (!row) return null;
+    const battery = row.suit_battery ?? 100, oxygen = row.suit_oxygen ?? 100;
+    return { deployedHumanId: row.deployedHumanId, x: row.x, y: row.y, carriedResources: JSON.parse(row.carriedResourcesJson), maxCarryingCapacityKg: row.maxCarryingCapacityKg, suitBattery: battery, maxSuitBattery: row.max_suit_battery ?? 100, suitOxygen: oxygen, maxSuitOxygen: row.max_suit_oxygen ?? 100, batteryConsumptionPerTick: 1, oxygenConsumptionPerTick: 1, estimatedTicksRemaining: Math.min(Math.ceil(battery), Math.ceil(oxygen)), exhausted: row.deployedHumanId !== null && (battery <= 0 || oxygen <= 0) };
   });
 }
 
 export function saveEvaState(state: HabitatEvaState): void {
   ensureDataDirectory();
-  withDatabase((db) => db.query(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg`).run(state.deployedHumanId, state.x, state.y, JSON.stringify(state.carriedResources), state.maxCarryingCapacityKg));
+  withDatabase((db) => db.query(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg, suit_battery, max_suit_battery, suit_oxygen, max_suit_oxygen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg, suit_battery=excluded.suit_battery, max_suit_battery=excluded.max_suit_battery, suit_oxygen=excluded.suit_oxygen, max_suit_oxygen=excluded.max_suit_oxygen`).run(state.deployedHumanId, state.x, state.y, JSON.stringify(state.carriedResources), state.maxCarryingCapacityKg, state.suitBattery, state.maxSuitBattery, state.suitOxygen, state.maxSuitOxygen));
+}
+
+export function consumeEvaBatteryAtomically(cost: number): void {
+  const boundedCost = Number.isFinite(cost) ? Math.max(0, cost) : 0;
+  ensureDataDirectory();
+  withDatabase((db) => db.transaction(() => {
+    db.query("UPDATE eva_state SET suit_battery = MAX(0, suit_battery - ?) WHERE id = 1").run(boundedCost);
+  })());
+}
+
+export function dockEvaStateAtomically(
+  humanId: string,
+  suitportModuleId: string,
+  carriedResources: HabitatCarriedResource[],
+): HabitatEvaState {
+  ensureDataDirectory();
+  const next: HabitatEvaState = {
+    deployedHumanId: null,
+    x: 0,
+    y: 0,
+    carriedResources: [],
+    maxCarryingCapacityKg: loadEvaState()?.maxCarryingCapacityKg ?? 20,
+    suitBattery: 100,
+    maxSuitBattery: 100,
+    suitOxygen: 100,
+    maxSuitOxygen: 100,
+    batteryConsumptionPerTick: 1,
+    oxygenConsumptionPerTick: 1,
+    estimatedTicksRemaining: 0,
+    exhausted: false,
+  };
+
+  return withDatabase((db) => db.transaction(() => {
+    const human = db.query("SELECT id FROM habitat_humans WHERE id = ?").get(humanId);
+    if (!human) throw new Error(`Human not found: ${humanId}.`);
+
+    const now = new Date().toISOString();
+    const existingInventory = db.query("SELECT resource_id AS resourceId, display_name AS displayName, quantity, unit, category, source FROM inventory_items").all() as Array<{ resourceId: string; displayName: string; quantity: number; unit: string; category: string; source: string }>;
+    const inventoryById = new Map(existingInventory.map((item) => [normalizeStateResourceId(item.resourceId), item]));
+
+    for (const resource of carriedResources) {
+      if (!resource.resourceId || !Number.isFinite(resource.quantityKg) || resource.quantityKg < 0) {
+        throw new Error("EVA carried resources are invalid.");
+      }
+      const resourceId = normalizeStateResourceId(resource.resourceId);
+      const existing = inventoryById.get(resourceId);
+      const quantity = (existing?.quantity ?? 0) + resource.quantityKg;
+      db.run(
+        `INSERT INTO inventory_items (resource_id, display_name, quantity, unit, category, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(resource_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at`,
+        resourceId,
+        existing?.displayName || deriveStateDisplayName(resourceId),
+        quantity,
+        existing?.unit || "kg",
+        existing?.category || "",
+        existing?.source || "local",
+        now,
+      );
+      inventoryById.set(resourceId, { resourceId, displayName: existing?.displayName || deriveStateDisplayName(resourceId), quantity, unit: existing?.unit || "kg", category: existing?.category || "", source: existing?.source || "local" });
+    }
+
+    db.run("UPDATE habitat_humans SET location_module_id = ? WHERE id = ?", suitportModuleId, humanId);
+    db.run(
+      `INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg)
+       VALUES (1, NULL, 0, 0, '[]', ?)
+       ON CONFLICT(id) DO UPDATE SET deployed_human_id = NULL, x = 0, y = 0, carried_resources_json = '[]'`,
+      next.maxCarryingCapacityKg,
+    );
+    return next;
+  })());
+}
+
+function normalizeStateResourceId(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "resource";
+}
+
+function deriveStateDisplayName(resourceId: string): string {
+  return resourceId.split("-").filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ");
 }
 
 export function saveHabitatHumans(humans: HabitatHuman[]): void {
@@ -165,8 +247,8 @@ export function saveHabitatAlerts(alerts: HabitatAlert[]): void {
     db.transaction(() => {
       db.run("DELETE FROM habitat_alerts;");
       const insert = db.query(
-        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, details_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, occurrence_count, subject_json, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const alert of alerts) {
         insert.run(
@@ -179,6 +261,8 @@ export function saveHabitatAlerts(alerts: HabitatAlert[]): void {
           alert.message,
           alert.createdAt,
           alert.updatedAt,
+          alert.occurrenceCount ?? 1,
+          alert.subject ? JSON.stringify(alert.subject) : null,
           JSON.stringify(alert.details),
         );
       }
@@ -191,7 +275,7 @@ export function loadHabitatAlerts(): HabitatAlert[] {
   return withDatabase((db) => {
     const rows = db
       .query(
-        `SELECT id, schema_version AS schemaVersion, type, severity, status, source, message, created_at AS createdAt, updated_at AS updatedAt, details_json AS detailsJson
+        `SELECT id, schema_version AS schemaVersion, type, severity, status, source, message, created_at AS createdAt, updated_at AS updatedAt, occurrence_count AS occurrenceCount, subject_json AS subjectJson, details_json AS detailsJson
          FROM habitat_alerts`,
       )
       .all() as Array<{
@@ -204,6 +288,8 @@ export function loadHabitatAlerts(): HabitatAlert[] {
       message: string;
       createdAt: string;
       updatedAt: string;
+      occurrenceCount: number;
+      subjectJson: string | null;
       detailsJson: string;
     }>;
     return rows.map((row) => ({
@@ -216,6 +302,8 @@ export function loadHabitatAlerts(): HabitatAlert[] {
       message: row.message,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      ...(row.source === "habitat-local" ? { occurrenceCount: row.occurrenceCount } : {}),
+      ...(row.subjectJson ? { subject: JSON.parse(row.subjectJson) } : {}),
       details: JSON.parse(row.detailsJson),
     }));
   });
@@ -295,9 +383,11 @@ export function loadStateOrFail(): KeplerRegistration {
   return registration;
 }
 
-export function saveState(registration: KeplerRegistration): void {
+export function saveState(registration: KeplerRegistration, evaState?: HabitatEvaState): void {
   validateRegistrationPersistence(registration);
   withDatabase((db) => {
+    const existingHumans = db.query("SELECT id, display_name AS displayName, location_module_id AS locationModuleId, status FROM habitat_humans").all() as HabitatHuman[];
+    const humansToPersist = registration.humans.length > 0 ? registration.humans : existingHumans;
     db.transaction(() => {
       db.run("DELETE FROM kepler_registration;");
       db.run("DELETE FROM habitat_humans;");
@@ -322,13 +412,13 @@ export function saveState(registration: KeplerRegistration): void {
         `INSERT INTO habitat_humans (id, display_name, location_module_id, status)
          VALUES (?, ?, ?, ?)`,
       );
-      for (const human of registration.humans) {
+      for (const human of humansToPersist) {
         humanInsert.run(human.id, human.displayName, human.locationModuleId, human.status);
       }
 
       const alertInsert = db.query(
-        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, details_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO habitat_alerts (id, schema_version, type, severity, status, source, message, created_at, updated_at, occurrence_count, subject_json, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const alert of registration.alerts) {
         alertInsert.run(
@@ -341,6 +431,8 @@ export function saveState(registration: KeplerRegistration): void {
           alert.message,
           alert.createdAt,
           alert.updatedAt,
+          alert.occurrenceCount ?? 1,
+          alert.subject ? JSON.stringify(alert.subject) : null,
           JSON.stringify(alert.details),
         );
       }
@@ -359,6 +451,9 @@ export function saveState(registration: KeplerRegistration): void {
           JSON.stringify(module.runtimeAttributes),
           JSON.stringify(module.capabilities),
         );
+      }
+      if (evaState) {
+        db.run(`INSERT INTO eva_state (id, deployed_human_id, x, y, carried_resources_json, max_carrying_capacity_kg, suit_battery, max_suit_battery, suit_oxygen, max_suit_oxygen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET deployed_human_id=excluded.deployed_human_id, x=excluded.x, y=excluded.y, carried_resources_json=excluded.carried_resources_json, max_carrying_capacity_kg=excluded.max_carrying_capacity_kg, suit_battery=excluded.suit_battery, max_suit_battery=excluded.max_suit_battery, suit_oxygen=excluded.suit_oxygen, max_suit_oxygen=excluded.max_suit_oxygen`, evaState.deployedHumanId, evaState.x, evaState.y, JSON.stringify(evaState.carriedResources), evaState.maxCarryingCapacityKg, evaState.suitBattery, evaState.maxSuitBattery, evaState.suitOxygen, evaState.maxSuitOxygen);
       }
     })();
   });
@@ -392,6 +487,12 @@ export function setModuleStatus(registration: KeplerRegistration, moduleId: stri
       },
     })),
   };
+}
+
+export function getModuleStatusOptions(module: HabitatModule): string[] {
+  const options = ["online", "offline"];
+  if (module.blueprintId === "basic-suitport" || module.blueprintId === "workshop-fabricator") options.push("active");
+  return options;
 }
 
 function validateRegistrationPersistence(registration: KeplerRegistration): void {
