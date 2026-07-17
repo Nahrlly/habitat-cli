@@ -964,7 +964,7 @@ app.get("/world/scan", async (c) => {
   }
 });
 
-const dashboardRoutes = new Set(["/", "/dashboard", "/modules", "/humans", "/weather", "/reports", "/settings"]);
+const dashboardRoutes = new Set(["/", "/dashboard", "/modules", "/blueprints", "/humans", "/weather", "/reports", "/settings"]);
 const dashboardDistDirectory = path.resolve(process.env.HABITAT_DIST_DIRECTORY ?? "dist");
 
 app.get("/", () => serveDashboardEntry());

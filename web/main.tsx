@@ -15,6 +15,9 @@ type View = "home" | "modules" | "blueprints" | "humans" | "weather" | "reports"
 type Module = Registration["modules"][number];
 let currentConnectionState: RealtimeConnectionState = "offline";
 
+const viewPaths: Record<View, string> = { home: "/", modules: "/modules", blueprints: "/blueprints", humans: "/humans", weather: "/weather", reports: "/reports", settings: "/settings" };
+function viewFromPath(pathname: string): View { const entry = (Object.entries(viewPaths) as Array<[View, string]>).find(([, path]) => path === pathname); return entry?.[0] ?? "home"; }
+
 function App() {
   const [registration, setRegistration] = useState<Registration | null>(null);
   const [modules, setModules] = useState<Module[]>([]);
@@ -23,7 +26,7 @@ function App() {
   const [power, setPower] = useState<PowerOverview | null>(null);
   const [history, setHistory] = useState<PowerHistoryPoint[]>([]);
   const [clock, setClock] = useState<ClockStatus | null>(null);
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>(() => viewFromPath(window.location.pathname));
   const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,7 +93,8 @@ function App() {
   }, [applySnapshot, refresh, refreshClock]);
   useEffect(() => { const active = modules.filter((module) => module.runtimeAttributes.status === "offline" && (module.blueprintId === "command-module" || module.blueprintId === "life-support")).map((module) => module.blueprintId).sort().join(","); if (previousOfflineState.current === active) return; const was = previousOfflineState.current; previousOfflineState.current = active; if (!active || was === null) return; const messages = active.split(",").map((blueprintId) => blueprintId === "command-module" ? "Habitat disconnected: command module is offline." : "Life support is offline."); const message = messages.join(" "); setPushNotice(message); window.setTimeout(() => setPushNotice(""), 8000); void Promise.all(messages.map((alertMessage) => habitatApi.createAlert({ type: "module-offline", severity: "critical", source: "dashboard", message: alertMessage }))); }, [modules]);
   useEffect(() => { const wPerM2 = solar?.solarIrradiance.wPerM2; if (typeof wPerM2 !== "number") return; const low = wPerM2 <= 100; const wasLow = previousLowSolarState.current; previousLowSolarState.current = low; if (!low || wasLow === true) return; const message = `Solar irradiance is critically low at ${wPerM2} W/m².`; setPushNotice(message); window.setTimeout(() => setPushNotice(""), 8000); void habitatApi.createAlert({ type: "solar-irradiance-low", severity: "warning", source: "dashboard", message }); }, [solar]);
-  async function navigate(next: View) { setView(next); }
+  useEffect(() => { const onPopState = () => setView(viewFromPath(window.location.pathname)); window.addEventListener("popstate", onPopState); return () => window.removeEventListener("popstate", onPopState); }, []);
+  function navigate(next: View) { const path = viewPaths[next]; if (window.location.pathname !== path) window.history.pushState({}, "", path); setView(next); }
   function resetDashboardState() { setRegistration(null); setModules([]); setHumans([]); setSolar(null); setPower(null); setHistory([]); setClock(null); setAlerts([]); setView("home"); }
   async function register(e: React.FormEvent) { e.preventDefault(); if (!name.trim()) return; setBusy(true); try { resetDashboardState(); await habitatApi.register(name); setName(""); await refresh(); } catch (x) { setError(x instanceof Error ? x.message : "Registration failed."); } finally { setBusy(false); } }
   async function unregister() { setBusy(true); try { await habitatApi.unregister(); resetDashboardState(); setConfirming(false); } catch (x) { setError(x instanceof Error ? x.message : "Unregister failed."); } finally { setBusy(false); } }
