@@ -11,6 +11,7 @@ import { BlueprintView } from "./blueprints-view";
 import { InventoryView } from "./inventory-view";
 import "./styles.css";
 import "./theme-overrides.css";
+import "./eva-controls.css";
 
 type View = "home" | "modules" | "blueprints" | "humans" | "inventory" | "weather" | "reports" | "settings";
 type Module = Registration["modules"][number];
