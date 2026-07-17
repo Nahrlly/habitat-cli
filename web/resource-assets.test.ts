@@ -5,8 +5,8 @@ describe("Kepler resource assets", () => {
   test("resolves every included resource to artwork and icon paths", () => {
     expect(Object.keys(RESOURCE_ASSETS)).toHaveLength(11);
     for (const asset of Object.values(RESOURCE_ASSETS)) {
-      expect(asset.artwork).toMatch(/^\/resources\/.+\.png$/);
-      expect(asset.icon).toMatch(/^\/resources\/.+-icon\.png$/);
+      expect(asset.artwork).toMatch(/^\/resources\/.+\.png\?v=/);
+      expect(asset.icon).toMatch(/^\/resources\/.+-icon\.png\?v=/);
     }
   });
 

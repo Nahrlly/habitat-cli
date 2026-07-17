@@ -1,5 +1,7 @@
 export type ResourceAsset = { artwork: string; icon: string };
 
+const RESOURCE_ASSET_VERSION = "2026-07-dark";
+
 const includedResourceTypes = [
   "basalt-composite",
   "build-capacity",
@@ -16,8 +18,8 @@ const includedResourceTypes = [
 
 export const RESOURCE_ASSETS: Record<string, ResourceAsset> = Object.fromEntries(
   includedResourceTypes.map((resourceType) => [resourceType, {
-    artwork: `/resources/${resourceType}.png`,
-    icon: `/resources/${resourceType}-icon.png`,
+    artwork: `/resources/${resourceType}.png?v=${RESOURCE_ASSET_VERSION}`,
+    icon: `/resources/${resourceType}-icon.png?v=${RESOURCE_ASSET_VERSION}`,
   }]),
 );
 
