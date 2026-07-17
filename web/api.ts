@@ -30,7 +30,7 @@ export type ResourceScanTile = { x: number; y: number; terrain?: string; probabi
 export type ResourceScanCoordinate = { x: number; y: number };
 export type ResourceScan = { scan?: { origin?: ResourceScanCoordinate; tiles?: ResourceScanTile[] }; origin?: ResourceScanCoordinate; tiles?: ResourceScanTile[]; [key: string]: unknown };
 export type Blueprint = { blueprintId: string; displayName: string; description?: string; inputs?: Record<string, unknown>; output?: Record<string, unknown>; productionCost?: Record<string, unknown>; requiredFacility?: Record<string, unknown>; buildTicks?: number; prerequisites?: string[]; unlocks?: string[]; repeatable?: boolean; level?: number | null; runtimeAttributes?: Record<string, unknown>; capabilities?: string[] };
-export type InventoryItem = { resourceId: string; displayName?: string; quantity: number; unit?: string };
+export type InventoryItem = { resourceId: string; displayName?: string; quantity: number; unit?: string; category?: string; source?: string; updatedAt?: string };
 import { mergeScanResults } from "./scan-history";
 
 let scanHistory: ResourceScan | null = null;
