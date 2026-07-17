@@ -164,6 +164,7 @@ export class ClockEventManager {
     }
 
     updateClockState({
+      connectionStatus: "connected",
       latestAbsoluteTick: tick.absoluteTick,
       latestAdvancedBy: tick.advancedBy,
       lastMessageAt: receivedAt,
